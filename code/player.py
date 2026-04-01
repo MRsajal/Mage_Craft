@@ -15,7 +15,7 @@ def load_images(path, count=None):
     images = []
     for i in range(count):
         img = pygame.image.load(f"{path}/{i}.png").convert_alpha()
-        img = pygame.transform.scale(img, (80, 80))  # scale player
+        img = pygame.transform.scale(img, (68, 68))  # slightly smaller player sprite
         images.append(img)
     return images
 
@@ -52,8 +52,8 @@ class Player:
         self.image = idle_right_frames[0]
 
         # Use a dedicated hitbox (smaller than the sprite)
-        self.rect = pygame.Rect(self.x, self.y, 34, 46)
-        self.sprite_offset = pygame.Vector2(-23, -30)  # align sprite over hitbox
+        self.rect = pygame.Rect(self.x, self.y, 30, 42)
+        self.sprite_offset = pygame.Vector2(-19, -24)  # align smaller sprite over hitbox
 
     def move(self, keys):
         dx = 0

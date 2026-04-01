@@ -4,10 +4,14 @@ import random
 
 # import the tile data for the fire world
 try:
-    from code.fire_world_walk import fire_world_walk
+    from .fire_world_walk import fire_world_walk
 except Exception:
-    # fallback: empty map
-    fire_world_walk = [[-1]]
+    try:
+        # Allow running this module directly (python code/fire_world.py)
+        from fire_world_walk import fire_world_walk
+    except Exception:
+        # fallback: empty map
+        fire_world_walk = [[-1]]
 
 WALK_VALUES = {154}
 

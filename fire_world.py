@@ -6,8 +6,11 @@ import random
 try:
     from code.fire_world_walk import fire_world_walk
 except Exception:
-    # fallback: empty map
-    fire_world_walk = [[-1]]
+    try:
+        from fire_world_walk import fire_world_walk
+    except Exception:
+        # fallback: empty map
+        fire_world_walk = [[-1]]
 
 WALK_VALUES = {154}
 

@@ -1,8 +1,12 @@
 import pygame
 import sys
 import os
-from code.data import COLLISION as collision, EVENTS as events
-from code.fire_world import load_fire_map, is_walkable, spawn_emberstones, find_spawn_tile, FIRE_TILE_SIZE, FIRE_MAP_COLS, FIRE_MAP_ROWS
+try:
+    from .data import COLLISION as collision, EVENTS as events
+    from .fire_world import load_fire_map, is_walkable, spawn_emberstones, find_spawn_tile, FIRE_TILE_SIZE, FIRE_MAP_COLS, FIRE_MAP_ROWS
+except ImportError:
+    from data import COLLISION as collision, EVENTS as events
+    from fire_world import load_fire_map, is_walkable, spawn_emberstones, find_spawn_tile, FIRE_TILE_SIZE, FIRE_MAP_COLS, FIRE_MAP_ROWS
 
 pygame.init()
 ZOOM = 1.5
