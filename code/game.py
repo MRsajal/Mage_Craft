@@ -5,6 +5,8 @@ import random
 from collections import Counter
 try:
     from .data import COLLISION as collision, EVENTS as events
+    from .slime_world import load_slime_map, is_slime_blocked
+    from .slime_world_collision import slime_world_collision
     from .fire_world import (
         load_fire_map,
         is_walkable,
@@ -18,6 +20,8 @@ try:
 except ImportError:
     # Allow running this file directly (python code/game.py)
     from data import COLLISION as collision, EVENTS as events
+    from slime_world import load_slime_map, is_slime_blocked
+    from slime_world_collision import slime_world_collision
     from fire_world import (
         load_fire_map,
         is_walkable,
@@ -47,15 +51,18 @@ font = pygame.font.SysFont(None, 24)
 # Load and scale maps
 map_img_src = pygame.image.load(os.path.join("images", "Mage.png")).convert()
 map_img = pygame.transform.scale(map_img_src, (SCREEN_WIDTH, SCREEN_HEIGHT))
+slime_map_img = load_slime_map(SCREEN_WIDTH, SCREEN_HEIGHT)
 fire_map_img = load_fire_map(SCREEN_WIDTH, SCREEN_HEIGHT)
 
 # --- UI panel / state defaults ---
 PANEL_WIDTH = 0
-current_world = "main"  # "main" | "fire"
+current_world = "main"  # "main" | "slime"
+slime_world_unlocked = False
 
 # overlay / popup flags
 travel_overlay_open = False
 sleep_overlay_open = False
+travel_cancel_rect = pygame.Rect(0, 0, 220, 44)
 
 # Track days spent (increment when player sleeps)
 days_spent = 1
@@ -160,13 +167,16 @@ def grant_next_spell(reason):
 
 def issue_daily_order():
     global current_daily_order, order_completed_today
-    # Daily order must be one owned spell from the player's inventory.
-    if not spells:
-        current_daily_order = None
-        order_completed_today = False
-        push_log("No daily order: you do not own any spells yet.")
-        return
-    current_daily_order = random.choice(list(set(spells)))
+    # Always issue exactly one order per day.
+    previous_order = current_daily_order
+    order_pool = list(set(spells))
+    if not order_pool:
+        order_pool = ["Fireball"]
+
+    if len(order_pool) > 1 and previous_order in order_pool:
+        order_pool.remove(previous_order)
+
+    current_daily_order = random.choice(order_pool)
     order_completed_today = False
     push_log(f"Daily order: Sell 1x {current_daily_order}.")
 
@@ -245,16 +255,24 @@ def draw_travel_popup(surface):
     shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
     shade.fill((0, 0, 0, 180))
     surface.blit(shade, (0, 0))
-    panel = pygame.Rect(80, 70, SCREEN_WIDTH - 160, SCREEN_HEIGHT - 140)
-    pygame.draw.rect(surface, (25, 25, 35), panel, border_radius=10)
-    pygame.draw.rect(surface, (120, 120, 140), panel, 2, border_radius=10)
-    surface.blit(font.render("TRAVEL", True, (255, 255, 255)), (panel.x + 20, panel.y + 20))
-    msg = "Go to Fire World?" if current_world == "main" else "Return to Main World?"
-    surface.blit(font.render(msg, True, (220, 220, 230)), (panel.x + 20, panel.y + 60))
+    panel = pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
+    pygame.draw.rect(surface, (25, 25, 35), panel)
+    pygame.draw.rect(surface, (120, 120, 140), panel, 2)
+    surface.blit(font.render("TRAVEL", True, (255, 255, 255)), (panel.x + 30, panel.y + 24))
+    if current_world == "main":
+        msg = "Choose destination"
+    else:
+        msg = "Return to Main World?"
+    surface.blit(font.render(msg, True, (220, 220, 230)), (panel.x + 30, panel.y + 64))
     mouse_pos = pygame.mouse.get_pos()
-    global travel_go_rect, travel_back_rect
-    travel_go_rect = pygame.Rect(panel.x + 20, panel.y + 110, 260, 44)
-    travel_back_rect = pygame.Rect(panel.x + 20, panel.y + 170, 260, 44)
+    global travel_go_rect, travel_back_rect, travel_cancel_rect
+    btn_w = min(460, SCREEN_WIDTH - 60)
+    btn_x = (SCREEN_WIDTH - btn_w) // 2
+    first_y = 130
+    gap = 68
+    travel_go_rect = pygame.Rect(btn_x, first_y, btn_w, 52)
+    travel_back_rect = pygame.Rect(btn_x, first_y + gap, btn_w, 52)
+    travel_cancel_rect = pygame.Rect(btn_x, first_y + (gap * 2), btn_w, 52)
 
     def draw_btn(r, text):
         hovered = r.collidepoint(mouse_pos)
@@ -263,8 +281,16 @@ def draw_travel_popup(surface):
         pygame.draw.rect(surface, (180, 180, 200), r, 2, border_radius=8)
         surface.blit(font.render(text, True, (255, 255, 255)), (r.x + 14, r.y + 12))
 
-    draw_btn(travel_go_rect, "Go" if current_world == "main" else "Return")
-    draw_btn(travel_back_rect, "Cancel")
+    if current_world == "main":
+        draw_btn(travel_go_rect, "Fire World")
+        if slime_world_unlocked:
+            draw_btn(travel_back_rect, "World Of Slime")
+            draw_btn(travel_cancel_rect, "Cancel")
+        else:
+            draw_btn(travel_back_rect, "Cancel")
+    else:
+        draw_btn(travel_go_rect, "Return")
+        draw_btn(travel_back_rect, "Cancel")
 
 
 def draw_sleep_popup(surface):
@@ -410,7 +436,7 @@ def draw_overlay(surface):
 
 
 def run():
-    global current_world, travel_overlay_open, sleep_overlay_open, days_spent, emberstone_items, active_overlay, last_rewarded_level, coins, xp, random_offer_spell, random_offer_amount, random_offer_xp, random_offer_coin
+    global current_world, travel_overlay_open, sleep_overlay_open, days_spent, emberstone_items, active_overlay, last_rewarded_level, coins, xp, random_offer_spell, random_offer_amount, random_offer_xp, random_offer_coin, slime_world_unlocked
     # instantiate player after display initialized (safe for image loads)
     player = Player(150, 150)
     issue_daily_order()
@@ -438,31 +464,43 @@ def run():
                         active_overlay = "spells" if active_overlay != "spells" else None
                     elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                         if active_overlay is None:
-                            ev = player_event_tile(player.rect)
-                            if ev == 76:
-                                travel_overlay_open = True
-                            elif ev == 20:
-                                sleep_overlay_open = True
+                            if current_world == "main":
+                                ev = player_event_tile(player.rect)
+                                if ev == 76:
+                                    travel_overlay_open = True
+                                elif ev == 20:
+                                    sleep_overlay_open = True
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if travel_overlay_open:
-                    if travel_go_rect.collidepoint(event.pos):
-                        # toggle world
-                        current_world = "fire" if current_world == "main" else "main"
-                        if current_world == "fire":
+                    if current_world == "main":
+                        if travel_go_rect.collidepoint(event.pos):
+                            current_world = "fire"
                             emberstone_items = spawn_emberstones(FIRE_MAP_COLS, FIRE_MAP_ROWS, FIRE_TILE_SIZE, count=6)
                             player.rect.x = 50
-                            # spawn player 200px lower in the fire world
                             player.rect.y = 50 + 200
                             player.x, player.y = player.rect.topleft
-                        else:
+                            travel_overlay_open = False
+                        elif travel_back_rect.collidepoint(event.pos):
+                            if slime_world_unlocked:
+                                current_world = "slime"
+                                emberstone_items = []
+                                player.rect.x = 150
+                                player.rect.y = 150
+                                player.x, player.y = player.rect.topleft
+                            travel_overlay_open = False
+                        elif slime_world_unlocked and travel_cancel_rect.collidepoint(event.pos):
+                            travel_overlay_open = False
+                    else:
+                        if travel_go_rect.collidepoint(event.pos):
+                            current_world = "main"
                             emberstone_items = []
                             player.rect.x = 150
                             player.rect.y = 150
                             player.x, player.y = player.rect.topleft
-                        travel_overlay_open = False
-                    elif travel_back_rect.collidepoint(event.pos):
-                        travel_overlay_open = False
+                            travel_overlay_open = False
+                        elif travel_back_rect.collidepoint(event.pos):
+                            travel_overlay_open = False
                 elif sleep_overlay_open:
                     if sleep_go_rect.collidepoint(event.pos):
                         days_spent += 1
@@ -492,7 +530,7 @@ def run():
                                 spells.append("Fireball")
                                 push_log("Crafted Fireball spell.")
                 else:
-                    if current_world == "fire" and fire_return_rect.collidepoint(event.pos):
+                    if current_world in ("fire", "slime") and fire_return_rect.collidepoint(event.pos):
                         current_world = "main"
                         emberstone_items = []
                         player.rect.x = 150
@@ -506,6 +544,10 @@ def run():
             player.move(keys)
 
         update_level_from_xp()
+        if (not slime_world_unlocked) and level >= 2:
+            slime_world_unlocked = True
+            push_log("World Of Slime unlocked.")
+
         while level > last_rewarded_level:
             granted = grant_next_spell(f"level {last_rewarded_level + 1}")
             last_rewarded_level += 1
@@ -537,15 +579,29 @@ def run():
                     player.rect.y += 1
                     player.x, player.y = player.rect.topleft
 
+        def world_solid_tile(tx, ty):
+            if current_world == "slime":
+                return is_slime_blocked(tx, ty)
+            if current_world == "fire":
+                return is_walkable(tx, ty)
+            return False
+
         # Apply movement with collision (main world uses COLLISION_TILE_VALUE)
-        player.apply_movement(is_walkable, collision, TILE_SIZE, MAP_COLS, MAP_ROWS, COLLISION_TILE_VALUE, current_world)
+        active_collision = slime_world_collision if current_world == "slime" else collision
+        active_collision_value = 102 if current_world == "slime" else COLLISION_TILE_VALUE
+        player.apply_movement(world_solid_tile, active_collision, TILE_SIZE, MAP_COLS, MAP_ROWS, active_collision_value, current_world)
 
         # Draw
         screen.fill((0, 0, 0))
-        screen.blit(fire_map_img if current_world == "fire" else map_img, (0, 0))
-        player.draw(screen)
+        if current_world == "slime":
+            screen.blit(slime_map_img, (0, 0))
+        elif current_world == "fire":
+            screen.blit(fire_map_img, (0, 0))
+        else:
+            screen.blit(map_img, (0, 0))
+        player.draw(screen, sprite_scale=0.8 if current_world == "slime" else 1.0)
 
-        if current_world == "fire":
+        if current_world in ("fire", "slime"):
             draw_fire_return_button(screen)
 
         draw_overlay(screen)

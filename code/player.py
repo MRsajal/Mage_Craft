@@ -151,8 +151,21 @@ class Player:
             else:
                 self.image = idle_left_frames[int(self.frame_index) % len(idle_left_frames)]
 
-    def draw(self, surface):
-        surface.blit(self.image, (self.rect.x + self.sprite_offset.x, self.rect.y + self.sprite_offset.y))
+    def draw(self, surface, sprite_scale=1.0):
+        base_x = self.rect.x + self.sprite_offset.x
+        base_y = self.rect.y + self.sprite_offset.y
+
+        if sprite_scale == 1.0:
+            surface.blit(self.image, (base_x, base_y))
+            return
+
+        # Keep sprite visually centered over the same anchor while scaling.
+        w = max(1, int(self.image.get_width() * sprite_scale))
+        h = max(1, int(self.image.get_height() * sprite_scale))
+        scaled = pygame.transform.smoothscale(self.image, (w, h))
+        base_rect = self.image.get_rect(topleft=(base_x, base_y))
+        scaled_rect = scaled.get_rect(center=base_rect.center)
+        surface.blit(scaled, scaled_rect.topleft)
 
     def check_collision(self, is_walkable_func, collision, TILE_SIZE, MAP_COLS, MAP_ROWS, COLLISION_TILE_VALUE, current_world):
         return any(self.rect.colliderect(t) for t in self._get_overlapping_solid_tiles(is_walkable_func, collision, TILE_SIZE, MAP_COLS, MAP_ROWS, COLLISION_TILE_VALUE, current_world))
