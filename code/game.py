@@ -1,18 +1,31 @@
 import pygame
 import sys
 import os
-import random
-import math
 from collections import Counter
 try:
     from .data import COLLISION as collision, EVENTS as events
     from .slime_world import load_slime_map, is_slime_blocked
     from .slime_world_collision import slime_world_collision
+    from .game_combat import (
+        spawn_slime_mobs as _spawn_slime_mobs,
+        spawn_fire_projectile as _spawn_fire_projectile,
+        update_fire_projectiles as _update_fire_projectiles,
+        draw_fire_projectiles as _draw_fire_projectiles,
+        update_slime_mobs as _update_slime_mobs,
+        draw_slime_mobs as _draw_slime_mobs,
+    )
+    from .game_progression import (
+        count_spell as _count_spell,
+        update_level_from_xp as _update_level_from_xp,
+        grant_next_spell as _grant_next_spell,
+        issue_daily_order as _issue_daily_order,
+        generate_random_spell_offer as _generate_random_spell_offer,
+        sell_daily_order_spell as _sell_daily_order_spell,
+    )
     from .fire_world import (
         load_fire_map,
         is_walkable,
         spawn_emberstones,
-        find_spawn_tile,
         FIRE_TILE_SIZE,
         FIRE_MAP_COLS,
         FIRE_MAP_ROWS,
@@ -23,11 +36,26 @@ except ImportError:
     from data import COLLISION as collision, EVENTS as events
     from slime_world import load_slime_map, is_slime_blocked
     from slime_world_collision import slime_world_collision
+    from game_combat import (
+        spawn_slime_mobs as _spawn_slime_mobs,
+        spawn_fire_projectile as _spawn_fire_projectile,
+        update_fire_projectiles as _update_fire_projectiles,
+        draw_fire_projectiles as _draw_fire_projectiles,
+        update_slime_mobs as _update_slime_mobs,
+        draw_slime_mobs as _draw_slime_mobs,
+    )
+    from game_progression import (
+        count_spell as _count_spell,
+        update_level_from_xp as _update_level_from_xp,
+        grant_next_spell as _grant_next_spell,
+        issue_daily_order as _issue_daily_order,
+        generate_random_spell_offer as _generate_random_spell_offer,
+        sell_daily_order_spell as _sell_daily_order_spell,
+    )
     from fire_world import (
         load_fire_map,
         is_walkable,
         spawn_emberstones,
-        find_spawn_tile,
         FIRE_TILE_SIZE,
         FIRE_MAP_COLS,
         FIRE_MAP_ROWS,
@@ -155,30 +183,11 @@ def push_log(line):
 
 
 def count_spell(spell_name):
-    return Counter(spells).get(spell_name, 0)
+    return _count_spell(spells, spell_name)
 
 
 def spawn_slime_mobs(count=SLIME_COUNT):
-    mobs = []
-    candidates = []
-    for ty in range(MAP_ROWS):
-        for tx in range(MAP_COLS):
-            if not is_slime_blocked(tx, ty):
-                candidates.append((tx, ty))
-
-    if not candidates:
-        return mobs
-
-    sample_count = min(count, len(candidates))
-    for tx, ty in random.sample(candidates, sample_count):
-        slime_rect = pygame.Rect(
-            tx * TILE_SIZE + random.randint(2, 8),
-            ty * TILE_SIZE + random.randint(2, 8),
-            24,
-            18,
-        )
-        mobs.append({"rect": slime_rect, "flash": 0, "direction": "right", "frame_index": 0.0, "hp": SLIME_MAX_HP})
-    return mobs
+    return _spawn_slime_mobs(count, MAP_ROWS, MAP_COLS, TILE_SIZE, is_slime_blocked, SLIME_MAX_HP)
 
 
 def enter_slime_world(player):
@@ -238,129 +247,52 @@ def spawn_fire_projectile(player):
     if not fire_spell_ready():
         return
 
-    direction = 1 if player.direction == "right" else -1
-    start_x = player.rect.centerx + (18 if direction > 0 else -18)
-    start_y = player.rect.centery - 8
-    fire_projectiles.append(
-        {
-            "rect": pygame.Rect(start_x, start_y, FIRE_PROJECTILE_SIZE, FIRE_PROJECTILE_SIZE),
-            "vx": direction * FIRE_PROJECTILE_SPEED,
-            "spawn_time": pygame.time.get_ticks(),
-            "frame_index": 0,
-        }
+    _spawn_fire_projectile(
+        player,
+        fire_projectiles,
+        FIRE_PROJECTILE_SIZE,
+        FIRE_PROJECTILE_SPEED,
+        pygame.time.get_ticks(),
     )
 
 
 def update_fire_projectiles():
-    now = pygame.time.get_ticks()
-    for projectile in fire_projectiles[:]:
-        projectile["rect"].x += projectile["vx"]
-        projectile["frame_index"] = min(len(fire_spell_frames) - 1, (now - projectile["spawn_time"]) // 120) if fire_spell_frames else 0
-        if now - projectile["spawn_time"] > FIRE_PROJECTILE_DURATION_MS:
-            fire_projectiles.remove(projectile)
-            continue
-        if projectile["rect"].right < 0 or projectile["rect"].left > SCREEN_WIDTH:
-            fire_projectiles.remove(projectile)
+    _update_fire_projectiles(
+        fire_projectiles,
+        pygame.time.get_ticks(),
+        FIRE_PROJECTILE_DURATION_MS,
+        len(fire_spell_frames),
+        SCREEN_WIDTH,
+    )
 
 
 def draw_fire_projectiles(surface):
-    for projectile in fire_projectiles:
-        if fire_spell_frames:
-            frame = fire_spell_frames[int(projectile["frame_index"])]
-            surface.blit(frame, projectile["rect"].topleft)
-        else:
-            pygame.draw.circle(surface, (255, 130, 50), projectile["rect"].center, projectile["rect"].width // 2)
-
-
-def move_slime_axis(slime, dx, dy):
-    if dx:
-        slime["rect"].x += dx
-
-    if dy:
-        slime["rect"].y += dy
-
-    slime["rect"].clamp_ip(pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT))
+    _draw_fire_projectiles(surface, fire_projectiles, fire_spell_frames)
 
 
 def update_slime_mobs(player, now_ms, current_hp, last_hit_at):
-    for slime in slime_mobs:
-        if slime["flash"] > 0:
-            slime["flash"] -= 1
-
-        dx_to_player = player.rect.centerx - slime["rect"].centerx
-        dy_to_player = player.rect.centery - slime["rect"].centery
-
-        step_x = 0
-        step_y = 0
-        if abs(dx_to_player) > 2:
-            step_x = SLIME_SPEED if dx_to_player > 0 else -SLIME_SPEED
-        if abs(dy_to_player) > 2:
-            step_y = SLIME_SPEED if dy_to_player > 0 else -SLIME_SPEED
-
-        move_slime_axis(slime, step_x, 0)
-        move_slime_axis(slime, 0, step_y)
-
-        moving = step_x != 0 or step_y != 0
-        if step_x > 0:
-            slime["direction"] = "right"
-        elif step_x < 0:
-            slime["direction"] = "left"
-
-        if moving:
-            frames = slime_right_frames if slime["direction"] == "right" else slime_left_frames
-            if frames:
-                slime["frame_index"] = (slime["frame_index"] + 0.2) % len(frames)
-        else:
-            slime["frame_index"] = 0.0
-
-    for projectile in fire_projectiles[:]:
-        for slime in slime_mobs[:]:
-            if projectile["rect"].colliderect(slime["rect"]):
-                slime["hp"] -= 1
-                slime["flash"] = 8
-                if projectile in fire_projectiles:
-                    fire_projectiles.remove(projectile)
-                if slime["hp"] <= 0:
-                    slime_mobs.remove(slime)
-                    drop_rect = pygame.Rect(
-                        slime["rect"].centerx - (WINDCRYSTAL_DROP_SIZE // 2),
-                        slime["rect"].centery - (WINDCRYSTAL_DROP_SIZE // 2),
-                        WINDCRYSTAL_DROP_SIZE,
-                        WINDCRYSTAL_DROP_SIZE,
-                    )
-                    windcrystal_items.append(drop_rect)
-                    push_log("A slime dropped windcrystal.")
-                break
-
-    if now_ms - last_hit_at >= PLAYER_HIT_COOLDOWN_MS:
-        for slime in slime_mobs:
-            if slime["rect"].colliderect(player.rect):
-                current_hp = max(0, current_hp - 1)
-                last_hit_at = now_ms
-                push_log(f"Slime hit you: HP {current_hp}/{PLAYER_MAX_HP}")
-                break
-
-    return current_hp, last_hit_at
+    return _update_slime_mobs(
+        player,
+        slime_mobs,
+        fire_projectiles,
+        windcrystal_items,
+        now_ms,
+        current_hp,
+        last_hit_at,
+        screen_width=SCREEN_WIDTH,
+        screen_height=SCREEN_HEIGHT,
+        slime_speed=SLIME_SPEED,
+        player_hit_cooldown_ms=PLAYER_HIT_COOLDOWN_MS,
+        player_max_hp=PLAYER_MAX_HP,
+        windcrystal_drop_size=WINDCRYSTAL_DROP_SIZE,
+        slime_right_frames=slime_right_frames,
+        slime_left_frames=slime_left_frames,
+        push_log=push_log,
+    )
 
 
 def draw_slime_mobs(surface):
-    for slime in slime_mobs:
-        frames = slime_right_frames if slime.get("direction") == "right" else slime_left_frames
-        if frames:
-            frame = frames[int(slime.get("frame_index", 0)) % len(frames)]
-            sprite_rect = frame.get_rect(center=slime["rect"].center)
-            surface.blit(frame, sprite_rect.topleft)
-            if slime["flash"] > 0:
-                flash = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
-                flash.fill((255, 180, 80, 120))
-                surface.blit(flash, sprite_rect.topleft)
-        else:
-            color = (80, 200, 110) if slime["flash"] == 0 else (255, 180, 80)
-            pygame.draw.ellipse(surface, color, slime["rect"])
-            eye_w = 3
-            eye_h = 4
-            pygame.draw.rect(surface, (20, 30, 20), pygame.Rect(slime["rect"].x + 6, slime["rect"].y + 5, eye_w, eye_h))
-            pygame.draw.rect(surface, (20, 30, 20), pygame.Rect(slime["rect"].right - 9, slime["rect"].y + 5, eye_w, eye_h))
+    _draw_slime_mobs(surface, slime_mobs, slime_right_frames, slime_left_frames)
 
 
 def draw_soft_glow(surface, center, color, radius, alpha=90):
@@ -511,83 +443,49 @@ for ty in range(FIRE_MAP_ROWS):
 
 def update_level_from_xp():
     global level
-    lvl = 1
-    for threshold in level_xp:
-        if xp >= threshold:
-            lvl += 1
-        else:
-            break
-    level = lvl
+    level = _update_level_from_xp(xp, level_xp)
 
 
 def grant_next_spell(reason):
     global next_spell_unlock_index
-    if next_spell_unlock_index >= len(MAGIC_SPELLS):
-        push_log("All magic spells unlocked.")
-        return False
-    spell_name = MAGIC_SPELLS[next_spell_unlock_index]
-    spells.append(spell_name)
-    next_spell_unlock_index += 1
-    push_log(f"Learned {spell_name} ({reason}).")
-    return True
+    next_spell_unlock_index, granted = _grant_next_spell(
+        spells,
+        next_spell_unlock_index,
+        MAGIC_SPELLS,
+        reason,
+        push_log,
+    )
+    return granted
 
 
 def issue_daily_order():
     global current_daily_order, order_completed_today
-    # Always issue exactly one order per day.
-    previous_order = current_daily_order
-    order_pool = list(set(spells))
-    if not order_pool:
-        order_pool = ["Fireball"]
-
-    if len(order_pool) > 1 and previous_order in order_pool:
-        order_pool.remove(previous_order)
-
-    current_daily_order = random.choice(order_pool)
-    order_completed_today = False
-    push_log(f"Daily order: Sell 1x {current_daily_order}.")
+    current_daily_order, order_completed_today = _issue_daily_order(spells, current_daily_order, push_log)
 
 
 def generate_random_spell_offer():
-    """Generate a random daily spell offer with random amount, xp, and coin.
-    Only offers spells that player owns in spells array."""
     global random_offer_spell, random_offer_amount, random_offer_xp, random_offer_coin
-    
-    # Only pick from spells the player actually owns
-    if not spells:
-        random_offer_spell = None
-        random_offer_amount = 0
-        random_offer_xp = 0
-        random_offer_coin = 0
-        push_log("No spells to offer today.")
-        return
-    
-    # Get unique spells from owned array
-    unique_owned_spells = list(set(spells))
-    random_offer_spell = random.choice(unique_owned_spells)
-    # Only one spell can be requested in the daily offer.
-    random_offer_amount = 1
-    random_offer_xp = random.randint(5, 20)
-    random_offer_coin = random.randint(10, 25)
-    push_log(f"Random offer: {random_offer_amount}x {random_offer_spell} = +{random_offer_coin} coins, +{random_offer_xp} XP.")
+
+    (
+        random_offer_spell,
+        random_offer_amount,
+        random_offer_xp,
+        random_offer_coin,
+    ) = _generate_random_spell_offer(spells, push_log)
 
 
 def sell_daily_order_spell():
-    global coins, xp, order_completed_today, current_daily_order
-    if current_daily_order is None:
-        push_log("No active order today.")
-        return
-    if order_completed_today:
-        push_log("Daily order already completed.")
-        return
-    if current_daily_order in spells:
-        spells.remove(current_daily_order)
-        coins += COIN_PER_SALE
-        xp += XP_PER_SALE
-        order_completed_today = True
-        push_log(f"Sold {current_daily_order}: +{COIN_PER_SALE} coins, +{XP_PER_SALE} XP.")
-    else:
-        push_log(f"You do not own {current_daily_order}.")
+    global coins, xp, order_completed_today
+    coins, xp, order_completed_today = _sell_daily_order_spell(
+        spells,
+        current_daily_order,
+        order_completed_today,
+        coins,
+        xp,
+        COIN_PER_SALE,
+        XP_PER_SALE,
+        push_log,
+    )
 
 
 def player_event_tile(player_rect, tile_size=TILE_SIZE, map_cols=MAP_COLS, map_rows=MAP_ROWS):
