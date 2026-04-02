@@ -54,9 +54,23 @@ map_img = pygame.transform.scale(map_img_src, (SCREEN_WIDTH, SCREEN_HEIGHT))
 slime_map_img = load_slime_map(SCREEN_WIDTH, SCREEN_HEIGHT)
 fire_map_img = load_fire_map(SCREEN_WIDTH, SCREEN_HEIGHT)
 
+
+def load_scaled_frames(folder, frame_count, size):
+    frames = []
+    for index in range(frame_count):
+        path = os.path.join(folder, f"{index}.png")
+        if not os.path.exists(path):
+            break
+        image = pygame.image.load(path).convert_alpha()
+        frames.append(pygame.transform.smoothscale(image, size))
+    return frames
+
+
+fire_spell_frames = load_scaled_frames(os.path.join("images", "fire"), 4, (28, 28))
+
 # --- UI panel / state defaults ---
 PANEL_WIDTH = 0
-current_world = "main"  # "main" | "slime"
+current_world = "main"  # "main" | "fire" | "slime"
 slime_world_unlocked = False
 
 # overlay / popup flags
@@ -67,13 +81,23 @@ travel_cancel_rect = pygame.Rect(0, 0, 220, 44)
 # Track days spent (increment when player sleeps)
 days_spent = 1
 
+SPELL_DURATION_MS = 60_000
+FIRE_PROJECTILE_DURATION_MS = 850
+FIRE_PROJECTILE_SPEED = 7
+FIRE_PROJECTILE_SIZE = 28
+SLIME_COUNT = 5
+
 # Simple UI / economy
 inventory = {"mat_emberstone": 2}
-spells = ["Fireball"]
+spells = ["fire_mage"]
 coins = 0
 xp = 0
 level = 1
 emberstone_items = []
+slime_mobs = []
+fire_projectiles = []
+selected_spell_name = None
+selected_spell_expires_at = 0
 XP_PER_LEVEL = 5
 level_xp = [10, 25, 50, 100, 150, 250, 500, 750, 9999]
 
@@ -89,6 +113,7 @@ XP_PER_SALE = 6
 # Spell selling UI state (track how many of each spell player wants to sell)
 spell_sell_amounts = {}  # {spell_name: amount}
 spell_sell_rects = {}    # {spell_name: (sell_button_rect, -_button_rect, +_button_rect)}
+spell_select_rects = {}
 
 # Random daily spell offer
 random_offer_spell = None
@@ -99,7 +124,7 @@ random_offer_btn_rect = None
 daily_order_btn_rect = None
 
 # overlays
-active_overlay = None  # None | "status" | "magic" | "spells"
+active_overlay = None  # None | "status" | "magic" | "orders" | "spells"
 
 # logs
 log = ["> Welcome, Mage. Your sanctum awaits."]
@@ -108,6 +133,144 @@ def push_log(line):
     log.insert(0, f"> {line}")
     if len(log) > 12:
         log.pop()
+
+
+def count_spell(spell_name):
+    return Counter(spells).get(spell_name, 0)
+
+
+def spawn_slime_mobs(count=SLIME_COUNT):
+    mobs = []
+    candidates = []
+    for ty in range(MAP_ROWS):
+        for tx in range(MAP_COLS):
+            if not is_slime_blocked(tx, ty):
+                candidates.append((tx, ty))
+
+    if not candidates:
+        return mobs
+
+    sample_count = min(count, len(candidates))
+    for tx, ty in random.sample(candidates, sample_count):
+        slime_rect = pygame.Rect(
+            tx * TILE_SIZE + random.randint(2, 8),
+            ty * TILE_SIZE + random.randint(2, 8),
+            24,
+            18,
+        )
+        mobs.append({"rect": slime_rect, "flash": 0})
+    return mobs
+
+
+def enter_slime_world(player):
+    global current_world, slime_mobs, emberstone_items, fire_projectiles
+    current_world = "slime"
+    emberstone_items = []
+    fire_projectiles = []
+    slime_mobs = spawn_slime_mobs()
+    player.rect.x = 150
+    player.rect.y = 150
+    player.x, player.y = player.rect.topleft
+
+
+def enter_fire_world(player):
+    global current_world, emberstone_items, slime_mobs, fire_projectiles
+    current_world = "fire"
+    slime_mobs = []
+    fire_projectiles = []
+    emberstone_items = spawn_emberstones(FIRE_MAP_COLS, FIRE_MAP_ROWS, FIRE_TILE_SIZE, count=6)
+    player.rect.x = 50
+    player.rect.y = 50 + 200
+    player.x, player.y = player.rect.topleft
+
+
+def leave_to_main_world(player):
+    global current_world, slime_mobs, fire_projectiles
+    current_world = "main"
+    slime_mobs = []
+    fire_projectiles = []
+    player.rect.x = 150
+    player.rect.y = 150
+    player.x, player.y = player.rect.topleft
+
+
+def activate_fire_mage_spell():
+    global selected_spell_name, selected_spell_expires_at
+    if count_spell("fire_mage") <= 0:
+        push_log("You do not own fire_mage.")
+        return False
+    spells.remove("fire_mage")
+    selected_spell_name = "fire_mage"
+    selected_spell_expires_at = pygame.time.get_ticks() + SPELL_DURATION_MS
+    push_log("Activated fire_mage for 1 minute.")
+    return True
+
+
+def fire_spell_ready():
+    return selected_spell_name == "fire_mage" and pygame.time.get_ticks() < selected_spell_expires_at
+
+
+def spawn_fire_projectile(player):
+    if not fire_spell_ready():
+        return
+
+    direction = 1 if player.direction == "right" else -1
+    start_x = player.rect.centerx + (18 if direction > 0 else -18)
+    start_y = player.rect.centery - 8
+    fire_projectiles.append(
+        {
+            "rect": pygame.Rect(start_x, start_y, FIRE_PROJECTILE_SIZE, FIRE_PROJECTILE_SIZE),
+            "vx": direction * FIRE_PROJECTILE_SPEED,
+            "spawn_time": pygame.time.get_ticks(),
+            "frame_index": 0,
+        }
+    )
+
+
+def update_fire_projectiles():
+    now = pygame.time.get_ticks()
+    for projectile in fire_projectiles[:]:
+        projectile["rect"].x += projectile["vx"]
+        projectile["frame_index"] = min(len(fire_spell_frames) - 1, (now - projectile["spawn_time"]) // 120) if fire_spell_frames else 0
+        if now - projectile["spawn_time"] > FIRE_PROJECTILE_DURATION_MS:
+            fire_projectiles.remove(projectile)
+            continue
+        if projectile["rect"].right < 0 or projectile["rect"].left > SCREEN_WIDTH:
+            fire_projectiles.remove(projectile)
+
+
+def draw_fire_projectiles(surface):
+    for projectile in fire_projectiles:
+        if fire_spell_frames:
+            frame = fire_spell_frames[int(projectile["frame_index"])]
+            surface.blit(frame, projectile["rect"].topleft)
+        else:
+            pygame.draw.circle(surface, (255, 130, 50), projectile["rect"].center, projectile["rect"].width // 2)
+
+
+def update_slime_mobs(player):
+    for slime in slime_mobs:
+        if slime["flash"] > 0:
+            slime["flash"] -= 1
+
+    for projectile in fire_projectiles[:]:
+        for slime in slime_mobs[:]:
+            if projectile["rect"].colliderect(slime["rect"]):
+                slime_mobs.remove(slime)
+                if projectile in fire_projectiles:
+                    fire_projectiles.remove(projectile)
+                push_log("A slime was burned away.")
+                break
+
+
+def draw_slime_mobs(surface):
+    for slime in slime_mobs:
+        color = (80, 200, 110) if slime["flash"] == 0 else (255, 180, 80)
+        pygame.draw.ellipse(surface, color, slime["rect"])
+        eye_w = 3
+        eye_h = 4
+        pygame.draw.rect(surface, (20, 30, 20), pygame.Rect(slime["rect"].x + 6, slime["rect"].y + 5, eye_w, eye_h))
+        pygame.draw.rect(surface, (20, 30, 20), pygame.Rect(slime["rect"].right - 9, slime["rect"].y + 5, eye_w, eye_h))
 
 # assets for magic screen
 FIREBALL_IMG_PATH = "spell_fireball.png"
@@ -355,7 +518,7 @@ def draw_overlay(surface):
                 continue
             surface.blit(font.render(line, True, (220, 220, 230)), (panel.x + 20, y))
             y += 26
-        hint = "M: Craft | O: Spellbook (Accept daily order)"
+        hint = "M: Craft | O: Orders | C: Spells"
         surface.blit(font.render(hint, True, (170, 170, 190)), (panel.x + 20, panel.bottom - 40))
 
     elif active_overlay == "magic":
@@ -374,7 +537,7 @@ def draw_overlay(surface):
         pygame.draw.rect(surface, bg, btn, border_radius=8)
         pygame.draw.rect(surface, (180, 180, 200), btn, 2, border_radius=8)
         surface.blit(font.render("Craft", True, (255, 255, 255)), (btn.x + 14, btn.y + 8))
-        surface.blit(font.render("Fireball", True, (200, 200, 210)), (btn.x + 14, btn.y + 28))
+        surface.blit(font.render("fire_mage", True, (200, 200, 210)), (btn.x + 14, btn.y + 28))
         mat_have = inventory.get("mat_emberstone", 0)
         mat_need = 2
         mat_line_y = panel.y + 190
@@ -385,21 +548,18 @@ def draw_overlay(surface):
         else:
             surface.blit(font.render(f"emberstone: {mat_have}/{mat_need}", True, (220, 220, 230)), (panel.x + 20, mat_line_y))
 
-    elif active_overlay == "spells":
-        surface.blit(font.render("SPELLBOOK - SELL SPELLS", True, (255, 255, 255)), (panel.x + 20, panel.y + 20))
+    elif active_overlay == "orders":
+        surface.blit(font.render("ORDERS", True, (255, 255, 255)), (panel.x + 20, panel.y + 20))
         spell_counts = Counter(spells)
-        y = panel.y + 60
-        spell_sell_rects.clear()
-
-        # Daily order uses single-click accept (no +/- amount controls).
-        surface.blit(font.render("--- DAILY ORDER ---", True, (120, 210, 255)), (panel.x + 20, y))
-        y += 30
         global daily_order_btn_rect
         daily_order_btn_rect = None
 
+        y = panel.y + 70
+        surface.blit(font.render("--- DAILY ORDER ---", True, (120, 210, 255)), (panel.x + 20, y))
+        y += 34
+
         if current_daily_order is None:
             surface.blit(font.render("No active order today.", True, (220, 220, 230)), (panel.x + 20, y))
-            y += 28
         else:
             have_daily = spell_counts.get(current_daily_order, 0)
             can_sell_daily = (not order_completed_today) and have_daily >= 1
@@ -414,9 +574,8 @@ def draw_overlay(surface):
             else:
                 daily_status = "don't have required spell"
             surface.blit(font.render(daily_status, True, (180, 180, 200)), (panel.x + 20, y))
-            y += 30
-
-            daily_order_btn_rect = pygame.Rect(panel.x + 20, y, 100, 32)
+            y += 34
+            daily_order_btn_rect = pygame.Rect(panel.x + 20, y, 140, 34)
             if can_sell_daily:
                 daily_btn_color = (80, 120, 100)
                 daily_btn_text = "ACCEPT"
@@ -427,16 +586,48 @@ def draw_overlay(surface):
                 daily_btn_color = (60, 60, 70)
                 daily_btn_text = "Can't sell"
             pygame.draw.rect(surface, daily_btn_color, daily_order_btn_rect, border_radius=6)
-            surface.blit(font.render(daily_btn_text, True, (255, 255, 255)), (daily_order_btn_rect.x + 12, daily_order_btn_rect.y + 6))
-            y += 44
-        
-        global random_offer_btn_rect
-        random_offer_btn_rect = None
-        surface.blit(font.render("Accept to sell instantly (one daily order per day).", True, (170, 170, 190)), (panel.x + 20, panel.bottom - 40))
+            surface.blit(font.render(daily_btn_text, True, (255, 255, 255)), (daily_order_btn_rect.x + 12, daily_order_btn_rect.y + 7))
+
+        surface.blit(font.render("Press C to open spells.", True, (170, 170, 190)), (panel.x + 20, panel.bottom - 40))
+
+    elif active_overlay == "spells":
+        surface.blit(font.render("SPELLBOOK", True, (255, 255, 255)), (panel.x + 20, panel.y + 20))
+        spell_counts = Counter(spells)
+        global spell_select_rects
+        spell_select_rects.clear()
+
+        surface.blit(font.render("Owned magic", True, (120, 210, 255)), (panel.x + 20, panel.y + 56))
+        y = panel.y + 88
+        unique_spells = list(spell_counts.keys())
+        if not unique_spells:
+            surface.blit(font.render("No spells owned.", True, (220, 220, 230)), (panel.x + 20, y))
+            y += 28
+        else:
+            for spell_name in unique_spells:
+                row_rect = pygame.Rect(panel.x + 20, y, panel.width - 40, 40)
+                hovered = row_rect.collidepoint(mouse_pos)
+                selected = spell_name == selected_spell_name
+                bg = (85, 105, 120) if selected else ((75, 75, 90) if hovered else (60, 60, 70))
+                pygame.draw.rect(surface, bg, row_rect, border_radius=8)
+                pygame.draw.rect(surface, (180, 180, 200), row_rect, 1, border_radius=8)
+                surface.blit(font.render(f"{spell_name} x{spell_counts[spell_name]}", True, (255, 255, 255)), (row_rect.x + 12, row_rect.y + 11))
+                spell_select_rects[spell_name] = row_rect
+                y += 48
+
+        if selected_spell_name is not None:
+            if selected_spell_name == "fire_mage" and pygame.time.get_ticks() < selected_spell_expires_at:
+                remaining = max(0, (selected_spell_expires_at - pygame.time.get_ticks()) // 1000)
+                status_line = f"Active: {selected_spell_name} ({remaining}s left)"
+            else:
+                status_line = f"Selected: {selected_spell_name}"
+            surface.blit(font.render(status_line, True, (170, 220, 180)), (panel.x + 20, panel.bottom - 70))
+
+        surface.blit(font.render("Click a spell to select it. Fire mage can be used with SPACE for 1 minute.", True, (170, 170, 190)), (panel.x + 20, panel.bottom - 40))
 
 
 def run():
     global current_world, travel_overlay_open, sleep_overlay_open, days_spent, emberstone_items, active_overlay, last_rewarded_level, coins, xp, random_offer_spell, random_offer_amount, random_offer_xp, random_offer_coin, slime_world_unlocked
+    global selected_spell_name, selected_spell_expires_at, fire_projectiles, slime_mobs
     # instantiate player after display initialized (safe for image loads)
     player = Player(150, 150)
     issue_daily_order()
@@ -461,7 +652,13 @@ def run():
                         active_overlay = "magic" if active_overlay != "magic" else None
                     elif event.key == pygame.K_o:
                         update_level_from_xp()
+                        active_overlay = "orders" if active_overlay != "orders" else None
+                    elif event.key == pygame.K_c:
+                        update_level_from_xp()
                         active_overlay = "spells" if active_overlay != "spells" else None
+                    elif event.key == pygame.K_SPACE:
+                        if fire_spell_ready():
+                            spawn_fire_projectile(player)
                     elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                         if active_overlay is None:
                             if current_world == "main":
@@ -475,29 +672,17 @@ def run():
                 if travel_overlay_open:
                     if current_world == "main":
                         if travel_go_rect.collidepoint(event.pos):
-                            current_world = "fire"
-                            emberstone_items = spawn_emberstones(FIRE_MAP_COLS, FIRE_MAP_ROWS, FIRE_TILE_SIZE, count=6)
-                            player.rect.x = 50
-                            player.rect.y = 50 + 200
-                            player.x, player.y = player.rect.topleft
+                            enter_fire_world(player)
                             travel_overlay_open = False
                         elif travel_back_rect.collidepoint(event.pos):
                             if slime_world_unlocked:
-                                current_world = "slime"
-                                emberstone_items = []
-                                player.rect.x = 150
-                                player.rect.y = 150
-                                player.x, player.y = player.rect.topleft
+                                enter_slime_world(player)
                             travel_overlay_open = False
                         elif slime_world_unlocked and travel_cancel_rect.collidepoint(event.pos):
                             travel_overlay_open = False
                     else:
                         if travel_go_rect.collidepoint(event.pos):
-                            current_world = "main"
-                            emberstone_items = []
-                            player.rect.x = 150
-                            player.rect.y = 150
-                            player.x, player.y = player.rect.topleft
+                            leave_to_main_world(player)
                             travel_overlay_open = False
                         elif travel_back_rect.collidepoint(event.pos):
                             travel_overlay_open = False
@@ -514,28 +699,33 @@ def run():
                     pos = event.pos
                     if back_button_rect.collidepoint(pos):
                         active_overlay = None
-                    elif active_overlay == "spells":
-                        spell_counts = Counter(spells)
-
-                        # Accept daily order sale.
+                    elif active_overlay == "orders":
                         if daily_order_btn_rect and daily_order_btn_rect.collidepoint(pos):
                             sell_daily_order_spell()
-                        
+
+                    elif active_overlay == "spells":
+                        for spell_name, rect in spell_select_rects.items():
+                            if rect.collidepoint(pos):
+                                if spell_name == "fire_mage":
+                                    activate_fire_mage_spell()
+                                else:
+                                    global selected_spell_name, selected_spell_expires_at
+                                    selected_spell_name = spell_name
+                                    selected_spell_expires_at = 0
+                                    push_log(f"Selected {spell_name}.")
+                                break
+
                     elif active_overlay == "magic":
                         panel = pygame.Rect(60, 50, SCREEN_WIDTH - 120, SCREEN_HEIGHT - 100)
                         btn = magic_craft_rect.move(panel.x - 60, panel.y - 50)
                         if btn.collidepoint(pos):
                             if inventory.get("mat_emberstone", 0) >= 2:
                                 inventory["mat_emberstone"] -= 2
-                                spells.append("Fireball")
-                                push_log("Crafted Fireball spell.")
+                                spells.append("fire_mage")
+                                push_log("Crafted fire_mage spell.")
                 else:
                     if current_world in ("fire", "slime") and fire_return_rect.collidepoint(event.pos):
-                        current_world = "main"
-                        emberstone_items = []
-                        player.rect.x = 150
-                        player.rect.y = 150
-                        player.x, player.y = player.rect.topleft
+                        leave_to_main_world(player)
                         push_log("Returned to Main World.")
 
         keys = pygame.key.get_pressed()
@@ -547,6 +737,11 @@ def run():
         if (not slime_world_unlocked) and level >= 2:
             slime_world_unlocked = True
             push_log("World Of Slime unlocked.")
+
+        if selected_spell_name == "fire_mage" and pygame.time.get_ticks() >= selected_spell_expires_at:
+            selected_spell_name = None
+            selected_spell_expires_at = 0
+            push_log("fire_mage expired.")
 
         while level > last_rewarded_level:
             granted = grant_next_spell(f"level {last_rewarded_level + 1}")
@@ -579,6 +774,11 @@ def run():
                     player.rect.y += 1
                     player.x, player.y = player.rect.topleft
 
+        update_fire_projectiles()
+
+        if current_world == "slime":
+            update_slime_mobs(player)
+
         def world_solid_tile(tx, ty):
             if current_world == "slime":
                 return is_slime_blocked(tx, ty)
@@ -599,7 +799,13 @@ def run():
             screen.blit(fire_map_img, (0, 0))
         else:
             screen.blit(map_img, (0, 0))
+
+        if current_world == "slime":
+            draw_slime_mobs(screen)
+
         player.draw(screen, sprite_scale=0.8 if current_world == "slime" else 1.0)
+
+        draw_fire_projectiles(screen)
 
         if current_world in ("fire", "slime"):
             draw_fire_return_button(screen)
@@ -618,6 +824,11 @@ def run():
                     screen.blit(img, it.topleft)
                 else:
                     pygame.draw.ellipse(screen, (255, 180, 60), it)
+
+        if current_world == "slime":
+            for slime in slime_mobs:
+                if slime["flash"] > 0:
+                    pygame.draw.ellipse(screen, (255, 180, 80), slime["rect"])
 
         pygame.display.update()
         clock.tick(60)
