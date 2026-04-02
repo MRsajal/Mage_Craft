@@ -2,6 +2,7 @@ import pygame
 import sys
 import os
 import random
+import math
 from collections import Counter
 try:
     from .data import COLLISION as collision, EVENTS as events
@@ -46,7 +47,10 @@ screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption("Mage Game")
 
 clock = pygame.time.Clock()
-font = pygame.font.SysFont(None, 24)
+font = pygame.font.SysFont("georgia", 22)
+title_font = pygame.font.SysFont("georgia", 32, bold=True)
+body_font = pygame.font.SysFont("georgia", 20)
+small_font = pygame.font.SysFont("georgia", 16)
 
 # Load and scale maps
 map_img_src = pygame.image.load(os.path.join("images", "Mage.png")).convert()
@@ -79,6 +83,8 @@ slime_world_unlocked = False
 travel_overlay_open = False
 sleep_overlay_open = False
 travel_cancel_rect = pygame.Rect(0, 0, 220, 44)
+control_overlay_open = False
+control_close_rect = pygame.Rect(0, 0, 220, 44)
 
 # Track days spent (increment when player sleeps)
 days_spent = 1
@@ -133,9 +139,11 @@ random_offer_xp = 0
 random_offer_coin = 0
 random_offer_btn_rect = None
 daily_order_btn_rect = None
+control_btn_rect = None
 
 # overlays
 active_overlay = None  # None | "status" | "magic" | "orders" | "spells"
+overlay_scroll_y = 0
 
 # logs
 log = ["> Welcome, Mage. Your sanctum awaits."]
@@ -354,6 +362,114 @@ def draw_slime_mobs(surface):
             pygame.draw.rect(surface, (20, 30, 20), pygame.Rect(slime["rect"].x + 6, slime["rect"].y + 5, eye_w, eye_h))
             pygame.draw.rect(surface, (20, 30, 20), pygame.Rect(slime["rect"].right - 9, slime["rect"].y + 5, eye_w, eye_h))
 
+
+def draw_soft_glow(surface, center, color, radius, alpha=90):
+    glow = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
+    glow_center = (radius * 2, radius * 2)
+    pygame.draw.circle(glow, (*color, alpha // 4), glow_center, radius * 2)
+    pygame.draw.circle(glow, (*color, alpha // 2), glow_center, int(radius * 1.35))
+    pygame.draw.circle(glow, (*color, alpha), glow_center, int(radius * 0.8))
+    surface.blit(glow, glow.get_rect(center=center))
+
+
+def draw_mystic_panel(surface, rect, title, subtitle=None):
+    overlay = pygame.Surface(rect.size, pygame.SRCALPHA)
+    pygame.draw.rect(overlay, (12, 16, 30, 218), overlay.get_rect(), border_radius=18)
+    pygame.draw.rect(overlay, (38, 48, 78, 145), overlay.get_rect().inflate(-6, -6), border_radius=14)
+    pygame.draw.rect(overlay, (140, 180, 255, 90), overlay.get_rect(), 2, border_radius=18)
+    pygame.draw.line(overlay, (125, 210, 255, 110), (24, 48), (rect.width - 24, 48), 1)
+    overlay.blit(title_font.render(title, True, (245, 247, 255)), (24, 14))
+    if subtitle:
+        overlay.blit(small_font.render(subtitle, True, (170, 186, 220)), (24, 52))
+    surface.blit(overlay, rect.topleft)
+    draw_soft_glow(surface, rect.topleft, (130, 170, 255), 42, 90)
+    draw_soft_glow(surface, rect.topright, (170, 130, 255), 42, 90)
+    draw_soft_glow(surface, (rect.centerx, rect.top + 10), (110, 220, 255), 56, 100)
+
+
+def draw_mystic_button(surface, rect, text, mouse_pos, accent=(120, 180, 255), secondary=None):
+    hovered = rect.collidepoint(mouse_pos)
+    button = pygame.Surface(rect.size, pygame.SRCALPHA)
+    pygame.draw.rect(button, (15, 19, 36, 205 if hovered else 170), button.get_rect(), border_radius=12)
+    pygame.draw.rect(button, (*accent, 130 if hovered else 80), button.get_rect(), 2, border_radius=12)
+    pygame.draw.rect(button, (255, 255, 255, 25), button.get_rect().inflate(-8, -8), 1, border_radius=10)
+    surface.blit(button, rect.topleft)
+    label = body_font.render(text, True, (255, 255, 255))
+    surface.blit(label, label.get_rect(center=rect.center))
+    if secondary:
+        sublabel = small_font.render(secondary, True, (188, 202, 228))
+        surface.blit(sublabel, sublabel.get_rect(center=(rect.centerx, rect.centery + 12)))
+
+
+def draw_stat_card(surface, rect, label, value, accent, detail=None, progress=None):
+    card = pygame.Surface(rect.size, pygame.SRCALPHA)
+    pygame.draw.rect(card, (15, 19, 36, 190), card.get_rect(), border_radius=14)
+    pygame.draw.rect(card, (*accent, 85), card.get_rect(), 1, border_radius=14)
+    label_surface = small_font.render(label, True, (172, 186, 220))
+    value_surface = body_font.render(value, True, (248, 249, 255))
+    label_y = 12
+    value_y = 10
+    card.blit(label_surface, (14, label_y))
+    value_x = rect.width - value_surface.get_width() - 14
+    card.blit(value_surface, (value_x, value_y))
+    if detail:
+        card.blit(small_font.render(detail, True, (188, 204, 232)), (14, rect.height - 21))
+    if progress is not None:
+        bar_rect = pygame.Rect(14, rect.height - 18, rect.width - 28, 6)
+        pygame.draw.rect(card, (32, 40, 65, 220), bar_rect, border_radius=4)
+        fill_rect = bar_rect.copy()
+        fill_rect.width = max(0, min(bar_rect.width, int(bar_rect.width * progress)))
+        pygame.draw.rect(card, (*accent, 220), fill_rect, border_radius=4)
+    surface.blit(card, rect.topleft)
+
+
+def get_overlay_scroll_max():
+    viewport_height = 134
+    if active_overlay == "status":
+        content_height = 260
+    elif active_overlay == "magic":
+        content_height = 280
+    elif active_overlay == "orders":
+        content_height = 210
+    elif active_overlay == "spells":
+        content_height = max(210, 112 + (52 * len(Counter(spells))))
+    else:
+        content_height = viewport_height
+    return max(0, content_height - viewport_height)
+
+
+def clamp_overlay_scroll():
+    global overlay_scroll_y
+    overlay_scroll_y = max(0, min(overlay_scroll_y, get_overlay_scroll_max()))
+
+
+def draw_control_popup(surface):
+    shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    shade.fill((4, 6, 14, 186))
+    surface.blit(shade, (0, 0))
+
+    panel = pygame.Rect(70, 56, SCREEN_WIDTH - 140, SCREEN_HEIGHT - 112)
+    draw_mystic_panel(surface, panel, "CONTROL", "How the menu buttons and keys work")
+
+    lines = [
+        "J: Open Status",
+        "M: Open Forge",
+        "O: Open Orders",
+        "C: Open Spellbook",
+        "Enter: Use event tiles for Travel or Rest",
+        "Space: Cast fire_mage when active",
+        "Mouse wheel / PageUp / PageDown: Scroll menu panels",
+    ]
+
+    y = panel.y + 92
+    for line in lines:
+        surface.blit(body_font.render(line, True, (228, 234, 245)), (panel.x + 28, y))
+        y += 30
+
+    global control_close_rect
+    control_close_rect = pygame.Rect(10, 10, 90, 32)
+    draw_mystic_button(surface, control_close_rect, "Cancel", pygame.mouse.get_pos(), accent=(180, 140, 255))
+
 # assets for magic screen
 FIREBALL_IMG_PATH = "spell_fireball.png"
 EMBERSTONE_IMG_PATH = "mat_emberstone.png"
@@ -486,165 +602,146 @@ def player_event_tile(player_rect, tile_size=TILE_SIZE, map_cols=MAP_COLS, map_r
 
 def draw_back_button(surface, mouse_pos):
     hovered = back_button_rect.collidepoint(mouse_pos)
-    bg = (90, 90, 110) if hovered else (70, 70, 80)
-    pygame.draw.rect(surface, bg, back_button_rect, border_radius=6)
-    pygame.draw.rect(surface, (180, 180, 200), back_button_rect, 2, border_radius=6)
-    label = font.render("Back", True, (255, 255, 255))
-    surface.blit(label, label.get_rect(center=back_button_rect.center))
+    accent = (140, 180, 255) if hovered else (180, 140, 255)
+    draw_mystic_button(surface, back_button_rect, "Back", mouse_pos, accent=accent)
 
 
 def draw_fire_return_button(surface):
-    hovered = fire_return_rect.collidepoint(pygame.mouse.get_pos())
-    bg = (120, 60, 40) if hovered else (90, 50, 30)
-    pygame.draw.rect(surface, bg, fire_return_rect, border_radius=6)
-    pygame.draw.rect(surface, (200, 160, 120), fire_return_rect, 2, border_radius=6)
-    label = font.render("Return", True, (255, 255, 255))
-    surface.blit(label, label.get_rect(center=fire_return_rect.center))
+    draw_mystic_button(surface, fire_return_rect, "Return", pygame.mouse.get_pos(), accent=(255, 160, 110))
 
 
 def draw_travel_popup(surface):
     shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    shade.fill((0, 0, 0, 180))
+    shade.fill((4, 6, 14, 186))
     surface.blit(shade, (0, 0))
-    panel = pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
-    pygame.draw.rect(surface, (25, 25, 35), panel)
-    pygame.draw.rect(surface, (120, 120, 140), panel, 2)
-    surface.blit(font.render("TRAVEL", True, (255, 255, 255)), (panel.x + 30, panel.y + 24))
+    panel = pygame.Rect(48, 40, SCREEN_WIDTH - 96, SCREEN_HEIGHT - 80)
+    draw_mystic_panel(surface, panel, "TRAVEL", "Choose the destination for this night")
     if current_world == "main":
         msg = "Choose destination"
     else:
         msg = "Return to Main World?"
-    surface.blit(font.render(msg, True, (220, 220, 230)), (panel.x + 30, panel.y + 64))
+    surface.blit(body_font.render(msg, True, (228, 234, 245)), (panel.x + 28, panel.y + 84))
     mouse_pos = pygame.mouse.get_pos()
     global travel_go_rect, travel_back_rect, travel_cancel_rect
-    btn_w = min(460, SCREEN_WIDTH - 60)
+    btn_w = min(460, SCREEN_WIDTH - 120)
     btn_x = (SCREEN_WIDTH - btn_w) // 2
-    first_y = 130
-    gap = 68
+    first_y = panel.y + 130
+    gap = 64
     travel_go_rect = pygame.Rect(btn_x, first_y, btn_w, 52)
     travel_back_rect = pygame.Rect(btn_x, first_y + gap, btn_w, 52)
     travel_cancel_rect = pygame.Rect(btn_x, first_y + (gap * 2), btn_w, 52)
 
-    def draw_btn(r, text):
-        hovered = r.collidepoint(mouse_pos)
-        bg = (90, 90, 110) if hovered else (70, 70, 80)
-        pygame.draw.rect(surface, bg, r, border_radius=8)
-        pygame.draw.rect(surface, (180, 180, 200), r, 2, border_radius=8)
-        surface.blit(font.render(text, True, (255, 255, 255)), (r.x + 14, r.y + 12))
-
     if current_world == "main":
-        draw_btn(travel_go_rect, "Fire World")
+        draw_mystic_button(surface, travel_go_rect, "Fire World", mouse_pos, accent=(255, 160, 110), secondary="Open the ember gate")
         if slime_world_unlocked:
-            draw_btn(travel_back_rect, "World Of Slime")
-            draw_btn(travel_cancel_rect, "Cancel")
+            draw_mystic_button(surface, travel_back_rect, "World Of Slime", mouse_pos, accent=(120, 220, 255), secondary="Unlocks at level 2")
+            draw_mystic_button(surface, travel_cancel_rect, "Cancel", mouse_pos, accent=(180, 140, 255))
         else:
-            draw_btn(travel_back_rect, "Cancel")
+            draw_mystic_button(surface, travel_back_rect, "Cancel", mouse_pos, accent=(180, 140, 255))
     else:
-        draw_btn(travel_go_rect, "Return")
-        draw_btn(travel_back_rect, "Cancel")
+        draw_mystic_button(surface, travel_go_rect, "Return", mouse_pos, accent=(120, 220, 255), secondary="Go back to the main world")
+        draw_mystic_button(surface, travel_back_rect, "Cancel", mouse_pos, accent=(180, 140, 255))
 
 
 def draw_sleep_popup(surface):
     shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    shade.fill((0, 0, 0, 180))
+    shade.fill((4, 6, 14, 186))
     surface.blit(shade, (0, 0))
     panel = pygame.Rect(80, 70, SCREEN_WIDTH - 160, SCREEN_HEIGHT - 140)
-    pygame.draw.rect(surface, (20, 20, 30), panel, border_radius=10)
-    pygame.draw.rect(surface, (120, 120, 140), panel, 2, border_radius=10)
-    surface.blit(font.render("REST", True, (255, 255, 255)), (panel.x + 20, panel.y + 20))
-    surface.blit(font.render("Sleep and start a new day?", True, (220, 220, 230)), (panel.x + 20, panel.y + 60))
+    draw_mystic_panel(surface, panel, "REST", "A quiet day closes and a new one begins")
+    surface.blit(body_font.render("Sleep and start a new day?", True, (228, 234, 245)), (panel.x + 28, panel.y + 84))
     mouse_pos = pygame.mouse.get_pos()
     global sleep_go_rect, sleep_back_rect
-    sleep_go_rect = pygame.Rect(panel.x + 20, panel.y + 110, 260, 44)
-    sleep_back_rect = pygame.Rect(panel.x + 20, panel.y + 170, 260, 44)
+    sleep_go_rect = pygame.Rect(panel.x + 28, panel.y + 128, 280, 52)
+    sleep_back_rect = pygame.Rect(panel.x + 28, panel.y + 192, 280, 52)
 
-    def draw_btn(r, text):
-        hovered = r.collidepoint(mouse_pos)
-        bg = (90, 90, 110) if hovered else (70, 70, 80)
-        pygame.draw.rect(surface, bg, r, border_radius=8)
-        pygame.draw.rect(surface, (180, 180, 200), r, 2, border_radius=8)
-        surface.blit(font.render(text, True, (255, 255, 255)), (r.x + 14, r.y + 12))
-
-    draw_btn(sleep_go_rect, "Sleep")
-    draw_btn(sleep_back_rect, "Cancel")
+    draw_mystic_button(surface, sleep_go_rect, "Sleep", mouse_pos, accent=(120, 220, 255), secondary="Advance the day")
+    draw_mystic_button(surface, sleep_back_rect, "Cancel", mouse_pos, accent=(180, 140, 255))
 
 
 def draw_overlay(surface):
     global active_overlay
     if active_overlay is None:
         return
+    clamp_overlay_scroll()
     update_level_from_xp()
     mouse_pos = pygame.mouse.get_pos()
     shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    shade.fill((0, 0, 0, 180))
+    shade.fill((4, 6, 14, 186))
     surface.blit(shade, (0, 0))
     panel = pygame.Rect(60, 50, SCREEN_WIDTH - 120, SCREEN_HEIGHT - 100)
-    pygame.draw.rect(surface, (25, 25, 35), panel, border_radius=10)
-    pygame.draw.rect(surface, (120, 120, 140), panel, 2, border_radius=10)
+    draw_mystic_panel(surface, panel, {
+        "status": "SANCTUM STATUS",
+        "magic": "ARCANE FORGE",
+        "orders": "ORDERS",
+        "spells": "SPELLBOOK",
+    }.get(active_overlay, "MENU"), {
+        "status": "Coins, vitality, growth, and daily progress",
+        "magic": "Shape spells from emberstone and windcrystal",
+        "orders": "Daily contracts and spell sales",
+        "spells": "Select your active magic",
+    }.get(active_overlay))
     draw_back_button(surface, mouse_pos)
 
+    content_view = pygame.Rect(panel.x + 18, panel.y + 80, panel.width - 36, panel.height - 126)
+    previous_clip = surface.get_clip()
+    surface.set_clip(content_view)
+    content_scroll_y = overlay_scroll_y
+
     if active_overlay == "status":
-        surface.blit(font.render("STATUS", True, (255, 255, 255)), (panel.x + 20, panel.y + 20))
         next_threshold = None
         idx = max(0, level - 1)
         if idx < len(level_xp):
             next_threshold = level_xp[idx]
         xp_line = f"XP: {xp}" if next_threshold is None else f"XP: {xp}/{next_threshold}"
-        lines = [
-            f"Coins: {coins}",
-            f"HP: {player_hp}/{PLAYER_MAX_HP}",
-            f"Level: {level}",
-            xp_line,
-            "",
-            f"Days: {days_spent}",
-            f"Spells owned: {len(spells)}",
-            f"Windcrystal: {inventory.get('mat_windcrystal', 0)}",
-
+        card_w = (panel.width - 80) // 2
+        card_h = 62
+        left_x = panel.x + 24
+        right_x = left_x + card_w + 16
+        top_y = panel.y + 92 - content_scroll_y
+        stats = [
+            ((left_x, top_y), "Coins", str(coins), (120, 220, 255), None, None),
+            ((right_x, top_y), "HP", f"{player_hp}/{PLAYER_MAX_HP}", (255, 140, 160), None, player_hp / PLAYER_MAX_HP),
+            ((left_x, top_y + 78), "Level", str(level), (175, 145, 255), None, None),
+            ((right_x, top_y + 78), "XP", xp_line, (110, 220, 255), None, (xp / next_threshold) if next_threshold else None),
+            ((left_x, top_y + 156), "Days", str(days_spent), (150, 235, 185), None, None),
+            ((right_x, top_y + 156), "Spells", str(len(spells)), (245, 190, 120), f"Owned: {len(Counter(spells))}", None),
         ]
-        y = panel.y + 60
-        for line in lines:
-            if line == "":
-                y += 10
-                continue
-            surface.blit(font.render(line, True, (220, 220, 230)), (panel.x + 20, y))
-            y += 26
-        hint = "M: Craft | O: Orders | C: Spells"
-        surface.blit(font.render(hint, True, (170, 170, 190)), (panel.x + 20, panel.bottom - 40))
+        for rect_pos, label, value, accent, detail, progress in stats:
+            draw_stat_card(surface, pygame.Rect(rect_pos[0], rect_pos[1], card_w, card_h), label, value, accent, detail=detail, progress=progress)
+
+        global control_btn_rect
+        control_btn_rect = pygame.Rect(back_button_rect.right + 10, back_button_rect.y, 110, back_button_rect.height)
+        draw_mystic_button(surface, control_btn_rect, "Control", mouse_pos, accent=(170, 140, 255))
 
     elif active_overlay == "magic":
-        surface.blit(font.render("MAGIC", True, (255, 255, 255)), (panel.x + 20, panel.y + 20))
-        icon_rect = pygame.Rect(panel.x + 20, panel.y + 70, 96, 96)
-        pygame.draw.rect(surface, (45, 45, 55), icon_rect)
-        pygame.draw.rect(surface, (120, 120, 140), icon_rect, 2)
+        surface.blit(body_font.render("Crafting focus", True, (180, 202, 230)), (panel.x + 24, panel.y + 68 - content_scroll_y))
+        icon_rect = pygame.Rect(panel.x + 30, panel.y + 100 - content_scroll_y, 92, 92)
+        pygame.draw.rect(surface, (18, 24, 42), icon_rect, border_radius=16)
+        pygame.draw.rect(surface, (140, 180, 255), icon_rect, 1, border_radius=16)
+        draw_soft_glow(surface, icon_rect.center, (120, 170, 255), 30, 85)
         if fireball_img is not None:
-            img = pygame.transform.smoothscale(fireball_img, (92, 92))
-            surface.blit(img, (icon_rect.x + 2, icon_rect.y + 2))
+            img = pygame.transform.smoothscale(fireball_img, (72, 72))
+            surface.blit(img, (icon_rect.x + 10, icon_rect.y + 10))
         else:
-            surface.blit(font.render("Fire", True, (255, 120, 80)), (icon_rect.x + 20, icon_rect.y + 38))
-        fire_btn = magic_fire_craft_rect.move(panel.x - 60, panel.y - 50)
-        hovered_fire = fire_btn.collidepoint(mouse_pos)
-        bg_fire = (90, 90, 110) if hovered_fire else (70, 70, 80)
-        pygame.draw.rect(surface, bg_fire, fire_btn, border_radius=8)
-        pygame.draw.rect(surface, (180, 180, 200), fire_btn, 2, border_radius=8)
-        surface.blit(font.render("Craft", True, (255, 255, 255)), (fire_btn.x + 14, fire_btn.y + 8))
-        surface.blit(font.render("fire_mage", True, (200, 200, 210)), (fire_btn.x + 14, fire_btn.y + 28))
+            surface.blit(body_font.render("Fire", True, (255, 160, 110)), (icon_rect.x + 24, icon_rect.y + 32))
+        surface.blit(small_font.render("Fireball core", True, (185, 202, 228)), (icon_rect.x + 6, icon_rect.bottom + 10))
 
-        flying_btn = magic_flying_craft_rect.move(panel.x - 60, panel.y - 50)
-        hovered_flying = flying_btn.collidepoint(mouse_pos)
-        bg_flying = (90, 90, 110) if hovered_flying else (70, 70, 80)
-        pygame.draw.rect(surface, bg_flying, flying_btn, border_radius=8)
-        pygame.draw.rect(surface, (180, 180, 200), flying_btn, 2, border_radius=8)
-        surface.blit(font.render("Craft", True, (255, 255, 255)), (flying_btn.x + 14, flying_btn.y + 8))
-        surface.blit(font.render("Flying", True, (200, 200, 210)), (flying_btn.x + 14, flying_btn.y + 28))
+        fire_btn = magic_fire_craft_rect.move(panel.x - 60, panel.y - 50 - content_scroll_y)
+        draw_mystic_button(surface, fire_btn, "Craft fire_mage", mouse_pos, accent=(255, 160, 110), secondary="Costs 2 emberstone")
+
+        flying_btn = magic_flying_craft_rect.move(panel.x - 60, panel.y - 50 - content_scroll_y)
+        draw_mystic_button(surface, flying_btn, "Craft Flying", mouse_pos, accent=(120, 220, 255), secondary="Costs 2 windcrystal")
+
         mat_have = inventory.get("mat_emberstone", 0)
         mat_need = 2
-        mat_line_y = panel.y + 190
+        mat_line_y = panel.y + 254
         if emberstone_img is not None:
             eimg = pygame.transform.smoothscale(emberstone_img, (24, 24))
             surface.blit(eimg, (panel.x + 20, mat_line_y))
-            surface.blit(font.render(f"emberstone: {mat_have}/{mat_need}", True, (220, 220, 230)), (panel.x + 50, mat_line_y + 2))
+            surface.blit(body_font.render(f"emberstone: {mat_have}/{mat_need}", True, (228, 234, 245)), (panel.x + 50, mat_line_y + 2))
         else:
-            surface.blit(font.render(f"emberstone: {mat_have}/{mat_need}", True, (220, 220, 230)), (panel.x + 20, mat_line_y))
+            surface.blit(body_font.render(f"emberstone: {mat_have}/{mat_need}", True, (228, 234, 245)), (panel.x + 20, mat_line_y))
 
         wind_have = inventory.get("mat_windcrystal", 0)
         wind_need = 2
@@ -652,75 +749,67 @@ def draw_overlay(surface):
         if windcrystal_img is not None:
             wimg = pygame.transform.smoothscale(windcrystal_img, (24, 24))
             surface.blit(wimg, (panel.x + 20, wind_line_y))
-            surface.blit(font.render(f"windcrystal: {wind_have}/{wind_need}", True, (220, 220, 230)), (panel.x + 50, wind_line_y + 2))
+            surface.blit(body_font.render(f"windcrystal: {wind_have}/{wind_need}", True, (228, 234, 245)), (panel.x + 50, wind_line_y + 2))
         else:
-            surface.blit(font.render(f"windcrystal: {wind_have}/{wind_need}", True, (220, 220, 230)), (panel.x + 20, wind_line_y))
+            surface.blit(body_font.render(f"windcrystal: {wind_have}/{wind_need}", True, (228, 234, 245)), (panel.x + 20, wind_line_y))
 
     elif active_overlay == "orders":
-        surface.blit(font.render("ORDERS", True, (255, 255, 255)), (panel.x + 20, panel.y + 20))
         spell_counts = Counter(spells)
         global daily_order_btn_rect
         daily_order_btn_rect = None
 
-        y = panel.y + 70
-        surface.blit(font.render("--- DAILY ORDER ---", True, (120, 210, 255)), (panel.x + 20, y))
-        y += 34
+        order_card = pygame.Rect(panel.x + 24, panel.y + 92 - content_scroll_y, panel.width - 48, 176)
+        pygame.draw.rect(surface, (18, 24, 42), order_card, border_radius=16)
+        pygame.draw.rect(surface, (120, 210, 255), order_card, 1, border_radius=16)
+        surface.blit(body_font.render("Daily order", True, (180, 202, 230)), (order_card.x + 16, order_card.y + 14))
 
         if current_daily_order is None:
-            surface.blit(font.render("No active order today.", True, (220, 220, 230)), (panel.x + 20, y))
+            surface.blit(body_font.render("No active order today.", True, (228, 234, 245)), (order_card.x + 16, order_card.y + 54))
         else:
             have_daily = spell_counts.get(current_daily_order, 0)
             can_sell_daily = (not order_completed_today) and have_daily >= 1
-            surface.blit(font.render(f"Sell 1x {current_daily_order}", True, (220, 220, 230)), (panel.x + 20, y))
-            y += 26
-            surface.blit(font.render(f"Reward: +{COIN_PER_SALE}C +{XP_PER_SALE}XP", True, (150, 200, 150)), (panel.x + 20, y))
-            y += 26
+            surface.blit(body_font.render(f"Sell 1x {current_daily_order}", True, (228, 234, 245)), (order_card.x + 16, order_card.y + 50))
+            surface.blit(body_font.render(f"Reward: +{COIN_PER_SALE} coins, +{XP_PER_SALE} XP", True, (155, 220, 170)), (order_card.x + 16, order_card.y + 84))
             if order_completed_today:
                 daily_status = "Completed today"
             elif have_daily > 0:
                 daily_status = f"have: {have_daily}"
             else:
                 daily_status = "don't have required spell"
-            surface.blit(font.render(daily_status, True, (180, 180, 200)), (panel.x + 20, y))
-            y += 34
-            daily_order_btn_rect = pygame.Rect(panel.x + 20, y, 140, 34)
+            surface.blit(small_font.render(daily_status, True, (180, 194, 218)), (order_card.x + 16, order_card.y + 116))
+            daily_order_btn_rect = pygame.Rect(order_card.x + 16, order_card.bottom - 50, 160, 36)
             if can_sell_daily:
-                daily_btn_color = (80, 120, 100)
                 daily_btn_text = "ACCEPT"
+                daily_btn_accent = (110, 220, 180)
             elif order_completed_today:
-                daily_btn_color = (60, 60, 70)
                 daily_btn_text = "Sold"
+                daily_btn_accent = (150, 160, 180)
             else:
-                daily_btn_color = (60, 60, 70)
                 daily_btn_text = "Can't sell"
-            pygame.draw.rect(surface, daily_btn_color, daily_order_btn_rect, border_radius=6)
-            surface.blit(font.render(daily_btn_text, True, (255, 255, 255)), (daily_order_btn_rect.x + 12, daily_order_btn_rect.y + 7))
+                daily_btn_accent = (150, 160, 180)
+            draw_mystic_button(surface, daily_order_btn_rect, daily_btn_text, mouse_pos, accent=daily_btn_accent)
 
-        surface.blit(font.render("Press C to open spells.", True, (170, 170, 190)), (panel.x + 20, panel.bottom - 40))
+        surface.blit(small_font.render("Press C to open spells.", True, (180, 194, 218)), (panel.x + 24, panel.bottom - 46 - content_scroll_y))
 
     elif active_overlay == "spells":
-        surface.blit(font.render("SPELLBOOK", True, (255, 255, 255)), (panel.x + 20, panel.y + 20))
         spell_counts = Counter(spells)
         global spell_select_rects
         spell_select_rects.clear()
 
-        surface.blit(font.render("Owned magic", True, (120, 210, 255)), (panel.x + 20, panel.y + 56))
-        y = panel.y + 88
+        surface.blit(body_font.render("Owned magic", True, (180, 202, 230)), (panel.x + 24, panel.y + 68 - content_scroll_y))
+        y = panel.y + 94 - content_scroll_y
         unique_spells = list(spell_counts.keys())
         if not unique_spells:
-            surface.blit(font.render("No spells owned.", True, (220, 220, 230)), (panel.x + 20, y))
+            surface.blit(body_font.render("No spells owned.", True, (228, 234, 245)), (panel.x + 24, y))
             y += 28
         else:
             for spell_name in unique_spells:
-                row_rect = pygame.Rect(panel.x + 20, y, panel.width - 40, 40)
-                hovered = row_rect.collidepoint(mouse_pos)
+                row_rect = pygame.Rect(panel.x + 24, y, panel.width - 48, 42)
                 selected = spell_name == selected_spell_name
-                bg = (85, 105, 120) if selected else ((75, 75, 90) if hovered else (60, 60, 70))
-                pygame.draw.rect(surface, bg, row_rect, border_radius=8)
-                pygame.draw.rect(surface, (180, 180, 200), row_rect, 1, border_radius=8)
-                surface.blit(font.render(f"{spell_name} x{spell_counts[spell_name]}", True, (255, 255, 255)), (row_rect.x + 12, row_rect.y + 11))
+                accent = (120, 220, 255) if selected else ((170, 140, 255) if row_rect.collidepoint(mouse_pos) else (110, 130, 170))
+                draw_mystic_button(surface, row_rect, f"{spell_name} x{spell_counts[spell_name]}", mouse_pos, accent=accent)
                 spell_select_rects[spell_name] = row_rect
-                y += 48
+                y += 52
 
         if selected_spell_name is not None:
             if selected_spell_name == "fire_mage" and pygame.time.get_ticks() < selected_spell_expires_at:
@@ -728,13 +817,25 @@ def draw_overlay(surface):
                 status_line = f"Active: {selected_spell_name} ({remaining}s left)"
             else:
                 status_line = f"Selected: {selected_spell_name}"
-            surface.blit(font.render(status_line, True, (170, 220, 180)), (panel.x + 20, panel.bottom - 70))
+            surface.blit(small_font.render(status_line, True, (170, 220, 180)), (panel.x + 24, panel.bottom - 82 - content_scroll_y))
 
-        surface.blit(font.render("Click a spell to select it. Fire mage can be used with SPACE for 1 minute.", True, (170, 170, 190)), (panel.x + 20, panel.bottom - 40))
+        surface.blit(small_font.render("Click a spell to select it. Fire mage can be used with SPACE for 1 minute.", True, (180, 194, 218)), (panel.x + 24, panel.bottom - 50 - content_scroll_y))
+
+    surface.set_clip(previous_clip)
+
+    scroll_max = get_overlay_scroll_max()
+    if scroll_max > 0:
+        track_rect = pygame.Rect(content_view.right - 10, content_view.y + 4, 4, content_view.height - 8)
+        pygame.draw.rect(surface, (38, 48, 78, 170), track_rect, border_radius=3)
+        thumb_height = max(24, int(track_rect.height * (content_view.height / (content_view.height + scroll_max))))
+        thumb_range = track_rect.height - thumb_height
+        thumb_y = track_rect.y if scroll_max == 0 else track_rect.y + int(thumb_range * (overlay_scroll_y / scroll_max))
+        thumb_rect = pygame.Rect(track_rect.x, thumb_y, track_rect.width, thumb_height)
+        pygame.draw.rect(surface, (140, 180, 255, 210), thumb_rect, border_radius=3)
 
 
 def run():
-    global current_world, travel_overlay_open, sleep_overlay_open, days_spent, emberstone_items, active_overlay, last_rewarded_level, coins, xp, random_offer_spell, random_offer_amount, random_offer_xp, random_offer_coin, slime_world_unlocked
+    global current_world, travel_overlay_open, sleep_overlay_open, control_overlay_open, days_spent, emberstone_items, active_overlay, overlay_scroll_y, last_rewarded_level, coins, xp, random_offer_spell, random_offer_amount, random_offer_xp, random_offer_coin, slime_world_unlocked
     global selected_spell_name, selected_spell_expires_at, fire_projectiles, slime_mobs, player_hp, last_player_hit_at, game_over_until_ms
     # instantiate player after display initialized (safe for image loads)
     player = Player(150, 150)
@@ -748,22 +849,33 @@ def run():
                 sys.exit()
 
             if event.type == pygame.KEYDOWN:
-                if travel_overlay_open:
+                if control_overlay_open:
+                    if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+                        control_overlay_open = False
+                elif travel_overlay_open:
                     if event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
                         travel_overlay_open = False
                 else:
                     if event.key == pygame.K_j:
                         update_level_from_xp()
                         active_overlay = "status" if active_overlay != "status" else None
+                        overlay_scroll_y = 0
                     elif event.key == pygame.K_m:
                         update_level_from_xp()
                         active_overlay = "magic" if active_overlay != "magic" else None
+                        overlay_scroll_y = 0
                     elif event.key == pygame.K_o:
                         update_level_from_xp()
                         active_overlay = "orders" if active_overlay != "orders" else None
+                        overlay_scroll_y = 0
                     elif event.key == pygame.K_c:
                         update_level_from_xp()
                         active_overlay = "spells" if active_overlay != "spells" else None
+                        overlay_scroll_y = 0
+                    elif event.key == pygame.K_PAGEUP:
+                        overlay_scroll_y = max(0, overlay_scroll_y - 48)
+                    elif event.key == pygame.K_PAGEDOWN:
+                        overlay_scroll_y = min(get_overlay_scroll_max(), overlay_scroll_y + 48)
                     elif event.key == pygame.K_SPACE:
                         if fire_spell_ready():
                             spawn_fire_projectile(player)
@@ -776,8 +888,15 @@ def run():
                                 elif ev == 20:
                                     sleep_overlay_open = True
 
+            if event.type == pygame.MOUSEWHEEL:
+                if active_overlay is not None and not travel_overlay_open and not sleep_overlay_open and not control_overlay_open:
+                    overlay_scroll_y = max(0, min(get_overlay_scroll_max(), overlay_scroll_y - (event.y * 36)))
+
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if travel_overlay_open:
+                if control_overlay_open:
+                    if control_close_rect.collidepoint(event.pos) or back_button_rect.collidepoint(event.pos):
+                        control_overlay_open = False
+                elif travel_overlay_open:
                     if current_world == "main":
                         if travel_go_rect.collidepoint(event.pos):
                             enter_fire_world(player)
@@ -794,6 +913,9 @@ def run():
                             travel_overlay_open = False
                         elif travel_back_rect.collidepoint(event.pos):
                             travel_overlay_open = False
+                elif control_overlay_open:
+                    if control_close_rect.collidepoint(event.pos) or back_button_rect.collidepoint(event.pos):
+                        control_overlay_open = False
                 elif sleep_overlay_open:
                     if sleep_go_rect.collidepoint(event.pos):
                         days_spent += 1
@@ -807,6 +929,9 @@ def run():
                     pos = event.pos
                     if back_button_rect.collidepoint(pos):
                         active_overlay = None
+                        overlay_scroll_y = 0
+                    elif active_overlay == "status" and 'control_btn_rect' in globals() and control_btn_rect.collidepoint(pos):
+                        control_overlay_open = True
                     elif active_overlay == "orders":
                         if daily_order_btn_rect and daily_order_btn_rect.collidepoint(pos):
                             sell_daily_order_spell()
@@ -825,8 +950,8 @@ def run():
 
                     elif active_overlay == "magic":
                         panel = pygame.Rect(60, 50, SCREEN_WIDTH - 120, SCREEN_HEIGHT - 100)
-                        fire_btn = magic_fire_craft_rect.move(panel.x - 60, panel.y - 50)
-                        flying_btn = magic_flying_craft_rect.move(panel.x - 60, panel.y - 50)
+                        fire_btn = magic_fire_craft_rect.move(panel.x - 60, panel.y - 50 - overlay_scroll_y)
+                        flying_btn = magic_flying_craft_rect.move(panel.x - 60, panel.y - 50 - overlay_scroll_y)
                         if fire_btn.collidepoint(pos):
                             if inventory.get("mat_emberstone", 0) >= 2:
                                 inventory["mat_emberstone"] -= 2
@@ -949,6 +1074,8 @@ def run():
             draw_fire_return_button(screen)
 
         draw_overlay(screen)
+        if control_overlay_open:
+            draw_control_popup(screen)
         if travel_overlay_open:
             draw_travel_popup(screen)
         if sleep_overlay_open:
