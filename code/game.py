@@ -67,6 +67,8 @@ def load_scaled_frames(folder, frame_count, size):
 
 
 fire_spell_frames = load_scaled_frames(os.path.join("images", "fire"), 4, (28, 28))
+slime_right_frames = load_scaled_frames(os.path.join("Slime", "walk", "right"), 6, (30, 30))
+slime_left_frames = load_scaled_frames(os.path.join("Slime", "walk", "left"), 6, (30, 30))
 
 # --- UI panel / state defaults ---
 PANEL_WIDTH = 0
@@ -86,18 +88,27 @@ FIRE_PROJECTILE_DURATION_MS = 850
 FIRE_PROJECTILE_SPEED = 7
 FIRE_PROJECTILE_SIZE = 28
 SLIME_COUNT = 5
+SLIME_SPEED = 1
+SLIME_MAX_HP = 3
+WINDCRYSTAL_DROP_SIZE = 18
+PLAYER_MAX_HP = 10
+PLAYER_HIT_COOLDOWN_MS = 800
 
 # Simple UI / economy
-inventory = {"mat_emberstone": 2}
+inventory = {"mat_emberstone": 2, "mat_windcrystal": 0}
 spells = ["fire_mage"]
 coins = 0
 xp = 0
 level = 1
 emberstone_items = []
+windcrystal_items = []
 slime_mobs = []
 fire_projectiles = []
 selected_spell_name = None
 selected_spell_expires_at = 0
+player_hp = PLAYER_MAX_HP
+last_player_hit_at = 0
+game_over_until_ms = 0
 XP_PER_LEVEL = 5
 level_xp = [10, 25, 50, 100, 150, 250, 500, 750, 9999]
 
@@ -158,15 +169,16 @@ def spawn_slime_mobs(count=SLIME_COUNT):
             24,
             18,
         )
-        mobs.append({"rect": slime_rect, "flash": 0})
+        mobs.append({"rect": slime_rect, "flash": 0, "direction": "right", "frame_index": 0.0, "hp": SLIME_MAX_HP})
     return mobs
 
 
 def enter_slime_world(player):
-    global current_world, slime_mobs, emberstone_items, fire_projectiles
+    global current_world, slime_mobs, emberstone_items, fire_projectiles, windcrystal_items
     current_world = "slime"
     emberstone_items = []
     fire_projectiles = []
+    windcrystal_items = []
     slime_mobs = spawn_slime_mobs()
     player.rect.x = 150
     player.rect.y = 150
@@ -174,10 +186,11 @@ def enter_slime_world(player):
 
 
 def enter_fire_world(player):
-    global current_world, emberstone_items, slime_mobs, fire_projectiles
+    global current_world, emberstone_items, slime_mobs, fire_projectiles, windcrystal_items
     current_world = "fire"
     slime_mobs = []
     fire_projectiles = []
+    windcrystal_items = []
     emberstone_items = spawn_emberstones(FIRE_MAP_COLS, FIRE_MAP_ROWS, FIRE_TILE_SIZE, count=6)
     player.rect.x = 50
     player.rect.y = 50 + 200
@@ -185,10 +198,13 @@ def enter_fire_world(player):
 
 
 def leave_to_main_world(player):
-    global current_world, slime_mobs, fire_projectiles
+    global current_world, slime_mobs, fire_projectiles, windcrystal_items, player_hp, last_player_hit_at
     current_world = "main"
     slime_mobs = []
     fire_projectiles = []
+    windcrystal_items = []
+    player_hp = PLAYER_MAX_HP
+    last_player_hit_at = 0
     player.rect.x = 150
     player.rect.y = 150
     player.x, player.y = player.rect.topleft
@@ -248,33 +264,100 @@ def draw_fire_projectiles(surface):
             pygame.draw.circle(surface, (255, 130, 50), projectile["rect"].center, projectile["rect"].width // 2)
 
 
-def update_slime_mobs(player):
+def move_slime_axis(slime, dx, dy):
+    if dx:
+        slime["rect"].x += dx
+
+    if dy:
+        slime["rect"].y += dy
+
+    slime["rect"].clamp_ip(pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT))
+
+
+def update_slime_mobs(player, now_ms, current_hp, last_hit_at):
     for slime in slime_mobs:
         if slime["flash"] > 0:
             slime["flash"] -= 1
 
+        dx_to_player = player.rect.centerx - slime["rect"].centerx
+        dy_to_player = player.rect.centery - slime["rect"].centery
+
+        step_x = 0
+        step_y = 0
+        if abs(dx_to_player) > 2:
+            step_x = SLIME_SPEED if dx_to_player > 0 else -SLIME_SPEED
+        if abs(dy_to_player) > 2:
+            step_y = SLIME_SPEED if dy_to_player > 0 else -SLIME_SPEED
+
+        move_slime_axis(slime, step_x, 0)
+        move_slime_axis(slime, 0, step_y)
+
+        moving = step_x != 0 or step_y != 0
+        if step_x > 0:
+            slime["direction"] = "right"
+        elif step_x < 0:
+            slime["direction"] = "left"
+
+        if moving:
+            frames = slime_right_frames if slime["direction"] == "right" else slime_left_frames
+            if frames:
+                slime["frame_index"] = (slime["frame_index"] + 0.2) % len(frames)
+        else:
+            slime["frame_index"] = 0.0
+
     for projectile in fire_projectiles[:]:
         for slime in slime_mobs[:]:
             if projectile["rect"].colliderect(slime["rect"]):
-                slime_mobs.remove(slime)
+                slime["hp"] -= 1
+                slime["flash"] = 8
                 if projectile in fire_projectiles:
                     fire_projectiles.remove(projectile)
-                push_log("A slime was burned away.")
+                if slime["hp"] <= 0:
+                    slime_mobs.remove(slime)
+                    drop_rect = pygame.Rect(
+                        slime["rect"].centerx - (WINDCRYSTAL_DROP_SIZE // 2),
+                        slime["rect"].centery - (WINDCRYSTAL_DROP_SIZE // 2),
+                        WINDCRYSTAL_DROP_SIZE,
+                        WINDCRYSTAL_DROP_SIZE,
+                    )
+                    windcrystal_items.append(drop_rect)
+                    push_log("A slime dropped windcrystal.")
                 break
+
+    if now_ms - last_hit_at >= PLAYER_HIT_COOLDOWN_MS:
+        for slime in slime_mobs:
+            if slime["rect"].colliderect(player.rect):
+                current_hp = max(0, current_hp - 1)
+                last_hit_at = now_ms
+                push_log(f"Slime hit you: HP {current_hp}/{PLAYER_MAX_HP}")
+                break
+
+    return current_hp, last_hit_at
 
 
 def draw_slime_mobs(surface):
     for slime in slime_mobs:
-        color = (80, 200, 110) if slime["flash"] == 0 else (255, 180, 80)
-        pygame.draw.ellipse(surface, color, slime["rect"])
-        eye_w = 3
-        eye_h = 4
-        pygame.draw.rect(surface, (20, 30, 20), pygame.Rect(slime["rect"].x + 6, slime["rect"].y + 5, eye_w, eye_h))
-        pygame.draw.rect(surface, (20, 30, 20), pygame.Rect(slime["rect"].right - 9, slime["rect"].y + 5, eye_w, eye_h))
+        frames = slime_right_frames if slime.get("direction") == "right" else slime_left_frames
+        if frames:
+            frame = frames[int(slime.get("frame_index", 0)) % len(frames)]
+            sprite_rect = frame.get_rect(center=slime["rect"].center)
+            surface.blit(frame, sprite_rect.topleft)
+            if slime["flash"] > 0:
+                flash = pygame.Surface(frame.get_size(), pygame.SRCALPHA)
+                flash.fill((255, 180, 80, 120))
+                surface.blit(flash, sprite_rect.topleft)
+        else:
+            color = (80, 200, 110) if slime["flash"] == 0 else (255, 180, 80)
+            pygame.draw.ellipse(surface, color, slime["rect"])
+            eye_w = 3
+            eye_h = 4
+            pygame.draw.rect(surface, (20, 30, 20), pygame.Rect(slime["rect"].x + 6, slime["rect"].y + 5, eye_w, eye_h))
+            pygame.draw.rect(surface, (20, 30, 20), pygame.Rect(slime["rect"].right - 9, slime["rect"].y + 5, eye_w, eye_h))
 
 # assets for magic screen
 FIREBALL_IMG_PATH = "spell_fireball.png"
 EMBERSTONE_IMG_PATH = "mat_emberstone.png"
+WINDCRYSTAL_IMG_PATH = "mat_windcrystal.png"
 try:
     fireball_img = pygame.image.load(os.path.join("images", FIREBALL_IMG_PATH)).convert_alpha()
 except Exception:
@@ -283,11 +366,16 @@ try:
     emberstone_img = pygame.image.load(os.path.join("images", EMBERSTONE_IMG_PATH)).convert_alpha()
 except Exception:
     emberstone_img = None
+try:
+    windcrystal_img = pygame.image.load(os.path.join("images", WINDCRYSTAL_IMG_PATH)).convert_alpha()
+except Exception:
+    windcrystal_img = None
 
 # UI rects
 back_button_rect = pygame.Rect(10, 10, 90, 32)
 fire_return_rect = pygame.Rect(10, 10, 110, 32)
-magic_craft_rect = pygame.Rect(220, 140, 220, 52)
+magic_fire_craft_rect = pygame.Rect(220, 140, 220, 52)
+magic_flying_craft_rect = pygame.Rect(220, 210, 220, 52)
 
 # collision helpers (debug rects)
 COLLISION_TILE_VALUE = 38
@@ -504,11 +592,13 @@ def draw_overlay(surface):
         xp_line = f"XP: {xp}" if next_threshold is None else f"XP: {xp}/{next_threshold}"
         lines = [
             f"Coins: {coins}",
+            f"HP: {player_hp}/{PLAYER_MAX_HP}",
             f"Level: {level}",
             xp_line,
             "",
             f"Days: {days_spent}",
             f"Spells owned: {len(spells)}",
+            f"Windcrystal: {inventory.get('mat_windcrystal', 0)}",
 
         ]
         y = panel.y + 60
@@ -531,13 +621,21 @@ def draw_overlay(surface):
             surface.blit(img, (icon_rect.x + 2, icon_rect.y + 2))
         else:
             surface.blit(font.render("Fire", True, (255, 120, 80)), (icon_rect.x + 20, icon_rect.y + 38))
-        btn = magic_craft_rect.move(panel.x - 60, panel.y - 50)
-        hovered = btn.collidepoint(mouse_pos)
-        bg = (90, 90, 110) if hovered else (70, 70, 80)
-        pygame.draw.rect(surface, bg, btn, border_radius=8)
-        pygame.draw.rect(surface, (180, 180, 200), btn, 2, border_radius=8)
-        surface.blit(font.render("Craft", True, (255, 255, 255)), (btn.x + 14, btn.y + 8))
-        surface.blit(font.render("fire_mage", True, (200, 200, 210)), (btn.x + 14, btn.y + 28))
+        fire_btn = magic_fire_craft_rect.move(panel.x - 60, panel.y - 50)
+        hovered_fire = fire_btn.collidepoint(mouse_pos)
+        bg_fire = (90, 90, 110) if hovered_fire else (70, 70, 80)
+        pygame.draw.rect(surface, bg_fire, fire_btn, border_radius=8)
+        pygame.draw.rect(surface, (180, 180, 200), fire_btn, 2, border_radius=8)
+        surface.blit(font.render("Craft", True, (255, 255, 255)), (fire_btn.x + 14, fire_btn.y + 8))
+        surface.blit(font.render("fire_mage", True, (200, 200, 210)), (fire_btn.x + 14, fire_btn.y + 28))
+
+        flying_btn = magic_flying_craft_rect.move(panel.x - 60, panel.y - 50)
+        hovered_flying = flying_btn.collidepoint(mouse_pos)
+        bg_flying = (90, 90, 110) if hovered_flying else (70, 70, 80)
+        pygame.draw.rect(surface, bg_flying, flying_btn, border_radius=8)
+        pygame.draw.rect(surface, (180, 180, 200), flying_btn, 2, border_radius=8)
+        surface.blit(font.render("Craft", True, (255, 255, 255)), (flying_btn.x + 14, flying_btn.y + 8))
+        surface.blit(font.render("Flying", True, (200, 200, 210)), (flying_btn.x + 14, flying_btn.y + 28))
         mat_have = inventory.get("mat_emberstone", 0)
         mat_need = 2
         mat_line_y = panel.y + 190
@@ -547,6 +645,16 @@ def draw_overlay(surface):
             surface.blit(font.render(f"emberstone: {mat_have}/{mat_need}", True, (220, 220, 230)), (panel.x + 50, mat_line_y + 2))
         else:
             surface.blit(font.render(f"emberstone: {mat_have}/{mat_need}", True, (220, 220, 230)), (panel.x + 20, mat_line_y))
+
+        wind_have = inventory.get("mat_windcrystal", 0)
+        wind_need = 2
+        wind_line_y = mat_line_y + 34
+        if windcrystal_img is not None:
+            wimg = pygame.transform.smoothscale(windcrystal_img, (24, 24))
+            surface.blit(wimg, (panel.x + 20, wind_line_y))
+            surface.blit(font.render(f"windcrystal: {wind_have}/{wind_need}", True, (220, 220, 230)), (panel.x + 50, wind_line_y + 2))
+        else:
+            surface.blit(font.render(f"windcrystal: {wind_have}/{wind_need}", True, (220, 220, 230)), (panel.x + 20, wind_line_y))
 
     elif active_overlay == "orders":
         surface.blit(font.render("ORDERS", True, (255, 255, 255)), (panel.x + 20, panel.y + 20))
@@ -627,7 +735,7 @@ def draw_overlay(surface):
 
 def run():
     global current_world, travel_overlay_open, sleep_overlay_open, days_spent, emberstone_items, active_overlay, last_rewarded_level, coins, xp, random_offer_spell, random_offer_amount, random_offer_xp, random_offer_coin, slime_world_unlocked
-    global selected_spell_name, selected_spell_expires_at, fire_projectiles, slime_mobs
+    global selected_spell_name, selected_spell_expires_at, fire_projectiles, slime_mobs, player_hp, last_player_hit_at, game_over_until_ms
     # instantiate player after display initialized (safe for image loads)
     player = Player(150, 150)
     issue_daily_order()
@@ -717,12 +825,22 @@ def run():
 
                     elif active_overlay == "magic":
                         panel = pygame.Rect(60, 50, SCREEN_WIDTH - 120, SCREEN_HEIGHT - 100)
-                        btn = magic_craft_rect.move(panel.x - 60, panel.y - 50)
-                        if btn.collidepoint(pos):
+                        fire_btn = magic_fire_craft_rect.move(panel.x - 60, panel.y - 50)
+                        flying_btn = magic_flying_craft_rect.move(panel.x - 60, panel.y - 50)
+                        if fire_btn.collidepoint(pos):
                             if inventory.get("mat_emberstone", 0) >= 2:
                                 inventory["mat_emberstone"] -= 2
                                 spells.append("fire_mage")
                                 push_log("Crafted fire_mage spell.")
+                            else:
+                                push_log("Need 2 emberstone.")
+                        elif flying_btn.collidepoint(pos):
+                            if inventory.get("mat_windcrystal", 0) >= 2:
+                                inventory["mat_windcrystal"] -= 2
+                                spells.append("Flying")
+                                push_log("Crafted Flying magic.")
+                            else:
+                                push_log("Need 2 windcrystal.")
                 else:
                     if current_world in ("fire", "slime") and fire_return_rect.collidepoint(event.pos):
                         leave_to_main_world(player)
@@ -730,7 +848,7 @@ def run():
 
         keys = pygame.key.get_pressed()
         # Move player only when no overlays/popup open
-        if active_overlay is None and not travel_overlay_open and not sleep_overlay_open:
+        if active_overlay is None and not travel_overlay_open and not sleep_overlay_open and pygame.time.get_ticks() >= game_over_until_ms:
             player.move(keys)
 
         update_level_from_xp()
@@ -777,7 +895,19 @@ def run():
         update_fire_projectiles()
 
         if current_world == "slime":
-            update_slime_mobs(player)
+            for it in windcrystal_items[:]:
+                if player.rect.colliderect(it):
+                    windcrystal_items.remove(it)
+                    inventory["mat_windcrystal"] = inventory.get("mat_windcrystal", 0) + 1
+                    push_log("Picked up windcrystal.")
+
+            now_ms = pygame.time.get_ticks()
+            player_hp, last_player_hit_at = update_slime_mobs(player, now_ms, player_hp, last_player_hit_at)
+            if player_hp <= 0:
+                game_over_until_ms = now_ms + 1200
+                push_log("GAME OVER - You were defeated.")
+                leave_to_main_world(player)
+                push_log("Auto-teleported home. HP restored.")
 
         def world_solid_tile(tx, ty):
             if current_world == "slime":
@@ -802,6 +932,14 @@ def run():
 
         if current_world == "slime":
             draw_slime_mobs(screen)
+
+        if current_world == "slime":
+            for it in windcrystal_items:
+                if windcrystal_img is not None:
+                    img = pygame.transform.smoothscale(windcrystal_img, (it.width, it.height))
+                    screen.blit(img, it.topleft)
+                else:
+                    pygame.draw.ellipse(screen, (120, 220, 255), it)
 
         player.draw(screen, sprite_scale=0.8 if current_world == "slime" else 1.0)
 
@@ -829,6 +967,18 @@ def run():
             for slime in slime_mobs:
                 if slime["flash"] > 0:
                     pygame.draw.ellipse(screen, (255, 180, 80), slime["rect"])
+
+        hp_label = font.render(f"HP: {player_hp}/{PLAYER_MAX_HP}", True, (255, 220, 220))
+        screen.blit(hp_label, (10, SCREEN_HEIGHT - 28))
+
+        if pygame.time.get_ticks() < game_over_until_ms:
+            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 170))
+            screen.blit(overlay, (0, 0))
+            title = font.render("GAME OVER", True, (255, 120, 120))
+            subtitle = font.render("Auto-teleporting home...", True, (240, 240, 240))
+            screen.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 12)))
+            screen.blit(subtitle, subtitle.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 18)))
 
         pygame.display.update()
         clock.tick(60)
