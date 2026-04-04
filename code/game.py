@@ -380,7 +380,7 @@ def draw_control_popup(surface):
     shade.fill((4, 6, 14, 186))
     surface.blit(shade, (0, 0))
 
-    panel = pygame.Rect(70, 56, SCREEN_WIDTH - 140, SCREEN_HEIGHT - 112)
+    panel = pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
     draw_mystic_panel(surface, panel, "CONTROL", "How the menu buttons and keys work")
 
     lines = [
@@ -512,7 +512,7 @@ def draw_travel_popup(surface):
     shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
     shade.fill((4, 6, 14, 186))
     surface.blit(shade, (0, 0))
-    panel = pygame.Rect(48, 40, SCREEN_WIDTH - 96, SCREEN_HEIGHT - 80)
+    panel = pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
     draw_mystic_panel(surface, panel, "TRAVEL", "Choose the destination for this night")
     if current_world == "main":
         msg = "Choose destination"
@@ -545,7 +545,7 @@ def draw_sleep_popup(surface):
     shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
     shade.fill((4, 6, 14, 186))
     surface.blit(shade, (0, 0))
-    panel = pygame.Rect(80, 70, SCREEN_WIDTH - 160, SCREEN_HEIGHT - 140)
+    panel = pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
     draw_mystic_panel(surface, panel, "REST", "A quiet day closes and a new one begins")
     surface.blit(body_font.render("Sleep and start a new day?", True, (228, 234, 245)), (panel.x + 28, panel.y + 84))
     mouse_pos = pygame.mouse.get_pos()
@@ -567,18 +567,24 @@ def draw_overlay(surface):
     shade = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
     shade.fill((4, 6, 14, 186))
     surface.blit(shade, (0, 0))
-    panel = pygame.Rect(60, 50, SCREEN_WIDTH - 120, SCREEN_HEIGHT - 100)
-    draw_mystic_panel(surface, panel, {
+    panel = pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
+    overlay_title = {
         "status": "SANCTUM STATUS",
         "magic": "ARCANE FORGE",
         "orders": "ORDERS",
         "spells": "SPELLBOOK",
-    }.get(active_overlay, "MENU"), {
+    }.get(active_overlay, "MENU")
+    overlay_subtitle = {
         "status": "Coins, vitality, growth, and daily progress",
-        "magic": "Shape spells from emberstone and windcrystal",
+        "magic": None,
         "orders": "Daily contracts and spell sales",
         "spells": "Select your active magic",
-    }.get(active_overlay))
+    }.get(active_overlay)
+    panel_title = "" if active_overlay == "magic" else overlay_title
+    draw_mystic_panel(surface, panel, panel_title, overlay_subtitle)
+    if active_overlay == "magic":
+        title_surface = title_font.render(overlay_title, True, (245, 247, 255))
+        surface.blit(title_surface, title_surface.get_rect(midtop=(panel.centerx, 14)))
     draw_back_button(surface, mouse_pos)
 
     content_view = pygame.Rect(panel.x + 18, panel.y + 80, panel.width - 36, panel.height - 126)
@@ -613,50 +619,30 @@ def draw_overlay(surface):
         draw_mystic_button(surface, control_btn_rect, "Control", mouse_pos, accent=(170, 140, 255))
 
     elif active_overlay == "magic":
-        surface.blit(body_font.render("Crafting focus", True, (180, 202, 230)), (panel.x + 24, panel.y + 68 - content_scroll_y))
-        icon_rect = pygame.Rect(panel.x + 30, panel.y + 100 - content_scroll_y, 92, 92)
-        pygame.draw.rect(surface, (18, 24, 42), icon_rect, border_radius=16)
-        pygame.draw.rect(surface, (140, 180, 255), icon_rect, 1, border_radius=16)
-        draw_soft_glow(surface, icon_rect.center, (120, 170, 255), 30, 85)
-        if fireball_img is not None:
-            img = pygame.transform.smoothscale(fireball_img, (72, 72))
-            surface.blit(img, (icon_rect.x + 10, icon_rect.y + 10))
-        else:
-            surface.blit(body_font.render("Fire", True, (255, 160, 110)), (icon_rect.x + 24, icon_rect.y + 32))
-        surface.blit(small_font.render("Fireball core", True, (185, 202, 228)), (icon_rect.x + 6, icon_rect.bottom + 10))
+        surface.blit(body_font.render("Crafting focus", True, (180, 202, 230)), (panel.x + 24, panel.y + 88 - content_scroll_y))
 
-        fire_btn = magic_fire_craft_rect.move(panel.x - 60, panel.y - 50 - content_scroll_y)
+        fire_btn = magic_fire_craft_rect.move(panel.x - 60, panel.y - 32 - content_scroll_y)
         draw_mystic_button(surface, fire_btn, "Craft fire_mage", mouse_pos, accent=(255, 160, 110), secondary="Costs 2 emberstone")
 
-        flying_btn = magic_flying_craft_rect.move(panel.x - 60, panel.y - 50 - content_scroll_y)
+        flying_btn = magic_flying_craft_rect.move(panel.x - 60, panel.y - 32 - content_scroll_y)
         draw_mystic_button(surface, flying_btn, "Craft Flying", mouse_pos, accent=(120, 220, 255), secondary="Costs 2 windcrystal")
 
         mat_have = inventory.get("mat_emberstone", 0)
         mat_need = 2
-        mat_line_y = panel.y + 254
-        if emberstone_img is not None:
-            eimg = pygame.transform.smoothscale(emberstone_img, (24, 24))
-            surface.blit(eimg, (panel.x + 20, mat_line_y))
-            surface.blit(body_font.render(f"emberstone: {mat_have}/{mat_need}", True, (228, 234, 245)), (panel.x + 50, mat_line_y + 2))
-        else:
-            surface.blit(body_font.render(f"emberstone: {mat_have}/{mat_need}", True, (228, 234, 245)), (panel.x + 20, mat_line_y))
+        mat_line_y = panel.y + 276
+        surface.blit(body_font.render(f"emberstone: {mat_have}/{mat_need}", True, (228, 234, 245)), (panel.x + 24, mat_line_y))
 
         wind_have = inventory.get("mat_windcrystal", 0)
         wind_need = 2
         wind_line_y = mat_line_y + 34
-        if windcrystal_img is not None:
-            wimg = pygame.transform.smoothscale(windcrystal_img, (24, 24))
-            surface.blit(wimg, (panel.x + 20, wind_line_y))
-            surface.blit(body_font.render(f"windcrystal: {wind_have}/{wind_need}", True, (228, 234, 245)), (panel.x + 50, wind_line_y + 2))
-        else:
-            surface.blit(body_font.render(f"windcrystal: {wind_have}/{wind_need}", True, (228, 234, 245)), (panel.x + 20, wind_line_y))
+        surface.blit(body_font.render(f"windcrystal: {wind_have}/{wind_need}", True, (228, 234, 245)), (panel.x + 24, wind_line_y))
 
     elif active_overlay == "orders":
         spell_counts = Counter(spells)
         global daily_order_btn_rect
         daily_order_btn_rect = None
 
-        order_card = pygame.Rect(panel.x + 24, panel.y + 92 - content_scroll_y, panel.width - 48, 176)
+        order_card = pygame.Rect(panel.x + 24, panel.y + 92 - content_scroll_y, panel.width - 48, 220)
         pygame.draw.rect(surface, (18, 24, 42), order_card, border_radius=16)
         pygame.draw.rect(surface, (120, 210, 255), order_card, 1, border_radius=16)
         surface.blit(body_font.render("Daily order", True, (180, 202, 230)), (order_card.x + 16, order_card.y + 14))
@@ -675,7 +661,7 @@ def draw_overlay(surface):
             else:
                 daily_status = "don't have required spell"
             surface.blit(small_font.render(daily_status, True, (180, 194, 218)), (order_card.x + 16, order_card.y + 116))
-            daily_order_btn_rect = pygame.Rect(order_card.x + 16, order_card.bottom - 50, 160, 36)
+            daily_order_btn_rect = pygame.Rect(order_card.x + 16, order_card.bottom - 52, 180, 36)
             if can_sell_daily:
                 daily_btn_text = "ACCEPT"
                 daily_btn_accent = (110, 220, 180)
@@ -686,8 +672,6 @@ def draw_overlay(surface):
                 daily_btn_text = "Can't sell"
                 daily_btn_accent = (150, 160, 180)
             draw_mystic_button(surface, daily_order_btn_rect, daily_btn_text, mouse_pos, accent=daily_btn_accent)
-
-        surface.blit(small_font.render("Press C to open spells.", True, (180, 194, 218)), (panel.x + 24, panel.bottom - 46 - content_scroll_y))
 
     elif active_overlay == "spells":
         spell_counts = Counter(spells)
