@@ -360,7 +360,9 @@ def get_overlay_scroll_max():
     if active_overlay == "status":
         content_height = 260
     elif active_overlay == "magic":
-        content_height = 280
+        owned_spell_rows = len(Counter(spells))
+        owned_material_rows = sum(1 for amount in inventory.values() if amount >= 1)
+        content_height = 230 + (52 * owned_spell_rows) + (32 * owned_material_rows)
     elif active_overlay == "orders":
         content_height = 210
     elif active_overlay == "spells":
@@ -619,6 +621,7 @@ def draw_overlay(surface):
         draw_mystic_button(surface, control_btn_rect, "Control", mouse_pos, accent=(170, 140, 255))
 
     elif active_overlay == "magic":
+        spell_counts = Counter(spells)
         surface.blit(body_font.render("Crafting focus", True, (180, 202, 230)), (panel.x + 24, panel.y + 88 - content_scroll_y))
 
         fire_btn = magic_fire_craft_rect.move(panel.x - 60, panel.y - 32 - content_scroll_y)
@@ -627,15 +630,31 @@ def draw_overlay(surface):
         flying_btn = magic_flying_craft_rect.move(panel.x - 60, panel.y - 32 - content_scroll_y)
         draw_mystic_button(surface, flying_btn, "Craft Flying", mouse_pos, accent=(120, 220, 255), secondary="Costs 2 windcrystal")
 
-        mat_have = inventory.get("mat_emberstone", 0)
-        mat_need = 2
-        mat_line_y = panel.y + 276
-        surface.blit(body_font.render(f"emberstone: {mat_have}/{mat_need}", True, (228, 234, 245)), (panel.x + 24, mat_line_y))
+        spells_title_y = panel.y + 276 - content_scroll_y
+        surface.blit(body_font.render("Owned spells", True, (180, 202, 230)), (panel.x + 24, spells_title_y))
 
-        wind_have = inventory.get("mat_windcrystal", 0)
-        wind_need = 2
-        wind_line_y = mat_line_y + 34
-        surface.blit(body_font.render(f"windcrystal: {wind_have}/{wind_need}", True, (228, 234, 245)), (panel.x + 24, wind_line_y))
+        spell_line_y = spells_title_y + 30
+        if spell_counts:
+            for spell_name, amount in spell_counts.items():
+                surface.blit(body_font.render(f"{spell_name} x{amount}", True, (228, 234, 245)), (panel.x + 24, spell_line_y))
+                spell_line_y += 30
+        else:
+            surface.blit(body_font.render("No spells owned.", True, (228, 234, 245)), (panel.x + 24, spell_line_y))
+            spell_line_y += 30
+
+        materials_title_y = spell_line_y + 8
+        surface.blit(body_font.render("Owned stones", True, (180, 202, 230)), (panel.x + 24, materials_title_y))
+
+        material_line_y = materials_title_y + 30
+        shown_material = False
+        for material_name, amount in inventory.items():
+            if amount >= 1:
+                shown_material = True
+                cleaned_name = material_name.replace("mat_", "")
+                surface.blit(body_font.render(f"{cleaned_name}: {amount}", True, (228, 234, 245)), (panel.x + 24, material_line_y))
+                material_line_y += 30
+        if not shown_material:
+            surface.blit(body_font.render("No stones available.", True, (228, 234, 245)), (panel.x + 24, material_line_y))
 
     elif active_overlay == "orders":
         spell_counts = Counter(spells)
